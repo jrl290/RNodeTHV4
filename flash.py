@@ -284,6 +284,39 @@ def merge_firmware(output_path, esptool_cmd):
     return True
 
 
+def reset_to_bootloader(port):
+    """Open serial port at 1200 baud to trigger ESP32-S3 USB bootloader reset.
+
+    Many ESP32-S3 boards with native USB will enter download mode when
+    the port is opened at 1200 baud with DTR toggled. This is useful
+    when the device is stuck or unresponsive to normal esptool connection.
+    """
+    try:
+        import serial
+    except ImportError:
+        print("Error: pyserial is required for 1200 baud reset.")
+        print("Install it with:  pip install pyserial")
+        return False
+
+    print(f"Opening {port} at 1200 baud to trigger bootloader...")
+    try:
+        ser = serial.Serial(port, 1200)
+        ser.dtr = False
+        time.sleep(0.1)
+        ser.dtr = True
+        time.sleep(0.1)
+        ser.dtr = False
+        ser.close()
+    except Exception as e:
+        print(f"Error: {e}")
+        return False
+
+    print("Waiting for device to re-enumerate in download mode...")
+    time.sleep(3)
+    print("Done. The device should now be in download mode.")
+    return True
+
+
 def flash_firmware(firmware_path, port, esptool_cmd, baud=BAUD_RATE):
     """Flash firmware to the device."""
     print(f"\nFlashing {firmware_path} to {port}...")
@@ -440,7 +473,34 @@ Examples:
     print(f"Firmware:    {firmware_path} ({os.path.getsize(firmware_path):,} bytes)")
     print()
 
-    confirm = input("Flash firmware? [Y/n] ").strip().lower()
+    # ── Interactive options ─────────────────────────────────────────────────
+
+    # Offer 1200 baud reset if device might be stuck
+    try:
+        reset_choice = input("Reset device to download mode first? (try if device is stuck) [y/N] ").strip().lower()
+    except EOFError:
+        reset_choice = ""
+    if reset_choice == "y":
+        reset_to_bootloader(port)
+        # Port may change after reset — re-scan
+        print("Re-scanning serial ports (port may have changed)...")
+        new_port = args.port or find_serial_port()
+        if new_port:
+            port = new_port
+            print(f"Using port: {port}")
+        else:
+            print(f"Warning: No ports found after reset. Continuing with {port}")
+
+    # Offer erase unless --erase was already passed
+    if not args.erase:
+        try:
+            erase_choice = input("Erase flash before writing? (recommended for recovery) [y/N] ").strip().lower()
+        except EOFError:
+            erase_choice = ""
+        if erase_choice == "y":
+            args.erase = True
+
+    confirm = input("\nFlash firmware? [Y/n] ").strip().lower()
     if confirm and confirm != "y":
         print("Aborted.")
         sys.exit(0)
