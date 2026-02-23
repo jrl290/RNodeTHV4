@@ -840,17 +840,13 @@ void draw_stat_area() {
       stat_area.print("wan");
     }
 
-    // Row 4 — LAN / local TCP server
-    if (!boundary_state.ap_tcp_enabled) {
-      stat_area.drawCircle(4, 33, 3, SSD1306_WHITE);
-      stat_area.setCursor(10, 36);
-      stat_area.print("LAN");
-    } else if (boundary_state.ap_tcp_connected) {
-      stat_area.fillCircle(4, 33, 3, SSD1306_WHITE);
-      stat_area.setCursor(10, 36);
-      stat_area.print("LAN");
-    } else {
-      stat_area.drawCircle(4, 33, 3, SSD1306_WHITE);
+    // Row 4 — LAN / local TCP server (hidden when disabled)
+    if (boundary_state.ap_tcp_enabled) {
+      if (boundary_state.ap_tcp_connected) {
+        stat_area.fillCircle(4, 33, 3, SSD1306_WHITE);
+      } else {
+        stat_area.drawCircle(4, 33, 3, SSD1306_WHITE);
+      }
       stat_area.setCursor(10, 36);
       stat_area.print("LAN");
     }
@@ -971,9 +967,11 @@ void draw_disp_area() {
         disp_area.print("No WiFi");
       }
 
-      // Backbone port
+      // Local TCP server port (shown only when enabled)
       disp_area.setCursor(2, 55);
-      disp_area.printf("Port:%u", boundary_state.tcp_port);
+      if (boundary_state.ap_tcp_enabled) {
+        disp_area.printf("Port:%u", boundary_state.ap_tcp_port);
+      }
 
       // 1px separator after Port line
       disp_area.drawLine(0, 60, disp_area.width()-1, 60, SSD1306_WHITE);

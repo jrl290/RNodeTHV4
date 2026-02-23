@@ -2,6 +2,7 @@
 *.hex
 *.pyc
 TODO
+rnodethv4_firmware.bin
 Release/*.hex
 Release/*.zip
 Release/*.json

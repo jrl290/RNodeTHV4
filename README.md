@@ -31,6 +31,8 @@ Built on [microReticulum](https://github.com/attermann/microReticulum) (a C++ po
 
 ## Hardware
 
+The **Heltec WiFi LoRa 32 V4** was chosen because it ships standard with **2 MB PSRAM** and **16 MB flash** — enough headroom for the microReticulum transport tables, packet caching to flash storage, and the web-based configuration portal. Many other LoRa dev boards come with only 4–8 MB flash and no PSRAM, which would require significant compromises to the boundary node's caching and routing capabilities.
+
 | Component | Spec |
 |-----------|------|
 | **Board** | Heltec WiFi LoRa 32 V4 |
@@ -41,27 +43,62 @@ Built on [microReticulum](https://github.com/attermann/microReticulum) (a C++ po
 
 ## Quick Start
 
-### Prerequisites
+### Option A: Easy Flash (no PlatformIO required)
 
-- [PlatformIO](https://platformio.org/) installed (via VS Code extension or CLI)
-- Heltec WiFi LoRa 32 V4 connected via USB
-
-### Build & Flash
+The easiest way to flash a pre-built firmware. You only need Python 3 and a USB cable.
 
 ```bash
-# Clone this repo
+# Install esptool (one time)
+pip install esptool
+
+# Clone this repo (or download just flash.py + the firmware binary)
+git clone https://github.com/jrl290/RNodeTHV4.git
+cd RNodeTHV4
+
+# Download latest firmware from GitHub Releases and flash
+python flash.py --download
+
+# Or flash a local binary
+python flash.py --file rnodethv4_firmware.bin
+```
+
+The flash utility will list all available serial ports and prompt you to choose one. If no ports are detected, you may need to hold the **BOOT** button while pressing **RESET** to enter download mode.
+
+### Option B: Build from Source (PlatformIO)
+
+For development or customization:
+
+```bash
+# Prerequisites: PlatformIO installed (VS Code extension or CLI)
+
 git clone https://github.com/jrl290/RNodeTHV4.git
 cd RNodeTHV4
 
 # Build
 pio run -e heltec_V4_boundary
 
-# Flash
+# Flash (via PlatformIO)
 pio run -e heltec_V4_boundary -t upload
+
+# Or create a merged binary and flash with the utility
+python flash.py --merge-only    # creates rnodethv4_firmware.bin
+python flash.py                 # flash it
 
 # Monitor serial output (optional)
 pio device monitor -e heltec_V4_boundary
 ```
+
+### Option C: Manual esptool Flash
+
+If you have the merged binary (`rnodethv4_firmware.bin`), you can flash it with a single esptool command:
+
+```bash
+esptool.py --chip esp32s3 --port /dev/ttyACM0 --baud 921600 \
+  write_flash -z --flash_mode qio --flash_freq 80m --flash_size 16MB \
+  0x0 rnodethv4_firmware.bin
+```
+
+Replace `/dev/ttyACM0` with your serial port (`/dev/cu.usbmodem*` on macOS, `COM3` on Windows).
 
 On first boot (or if no configuration is found), the device automatically enters the **Configuration Portal**.
 
@@ -120,7 +157,7 @@ The 128×64 OLED is split into two panels:
  ● LORA          ← filled circle = radio online
  ○ wifi          ← unfilled circle = WiFi disconnected
  ● WAN           ← filled = backbone TCP connected
- ○ LAN           ← unfilled = no local TCP clients
+ ● LAN           ← filled = local TCP client connected
  ────────────────
  Air:0.3%        ← current LoRa airtime
  ▓▓▓▓▓ |||||||   ← battery, signal quality
@@ -129,6 +166,7 @@ The 128×64 OLED is split into two panels:
 - **Filled circle (●)** = active/connected
 - **Unfilled circle (○)** = inactive/disconnected
 - Labels are UPPERCASE when active, lowercase when inactive (except LAN which is always uppercase)
+- **LAN row is hidden** when the Local TCP Server is disabled in configuration — the remaining layout stays in place
 
 ### Right Panel — Device Info (64×64)
 
@@ -138,9 +176,12 @@ The 128×64 OLED is split into two panels:
  SF7 125k         ← spreading factor & bandwidth
  ────────────────  ← separator
  192.168.1.42     ← WiFi IP address (or "No WiFi")
- Port:4242        ← backbone TCP port
+ Port:4242        ← Local TCP server port
  ────────────────  ← separator
 ```
+
+- **Port** shows the Local TCP server port (the port local nodes connect to), not the backbone port
+- **Port line is hidden** when the Local TCP Server is disabled
 
 ## Interface Modes
 
@@ -163,6 +204,11 @@ The TCP backbone connection uses `MODE_BOUNDARY` (`0x20`), a custom implementati
 ### Optional Local TCP Server — `MODE_ACCESS_POINT`
 
 If enabled, a TCP server on the WiFi network allows local Reticulum nodes to connect. It also uses Access Point mode, with the same announce filtering as LoRa.
+
+**Implementation details:**
+- Each TCP interface must have a **unique name** to produce a unique interface hash — the backbone uses `"TcpInterface"` and the local server uses `"LocalTcpInterface"`. Without distinct names, both interfaces produce the same hash, causing the interface map lookup to fail when routing packets.
+- TCP interfaces are configured with a **10 Mbps bitrate**, which causes Reticulum's Transport to prefer TCP paths over LoRa paths (typically ~1–10 kbps) when both are available for the same destination.
+- When the Local TCP Server is disabled, its status indicator (LAN) and port number are hidden from the OLED display.
 
 ## Routing & Memory Customizations
 
@@ -217,6 +263,18 @@ This was changed to call `unpack()` instead, which parses all packet fields AND 
 
 > **Note:** `unpack()` only parses the plaintext routing envelope (destination hash, flags, hops, transport headers). It does not decrypt the end-to-end encrypted payload. Every Reticulum transport node performs equivalent header parsing during normal routing — this is standard behavior, not a security concern.
 
+### Path Table Update Fix
+
+The C++ `std::map::insert()` method silently does nothing when a key already exists — unlike Python's `dict[key] = value` which replaces. The original microReticulum code used `insert()` to update path table entries, meaning stale LoRa paths were never replaced by newer TCP paths (or vice versa).
+
+This was fixed by calling `erase()` before `insert()`, ensuring updated path entries always replace stale ones. Without this fix, the boundary node would continue routing packets via an old interface even after a better path was learned.
+
+### Interface Name Uniqueness
+
+Each RNS interface must have a **unique name** because the name is hashed to produce the interface identifier used in path table lookups. If two interfaces share the same name, they produce the same hash, and `std::map` can only store one — causing the Transport layer to fail to resolve the correct outbound interface for packets.
+
+The TcpInterface constructor accepts an explicit `name` parameter: the backbone uses `"TcpInterface"` and the local server uses `"LocalTcpInterface"`.
+
 ## Connecting to the Backbone
 
 ### Example: Connect to rmap.world
@@ -265,8 +323,9 @@ Set the boundary node's **Local TCP Server** to **Enabled** (port 4242).
 | `RNode_Firmware.ino` | Main firmware — boundary mode initialization, interface setup, button handling |
 | `BoundaryMode.h` | Boundary state struct, EEPROM load/save, configuration defaults |
 | `BoundaryConfig.h` | Web-based captive portal for configuration |
-| `TcpInterface.h` | TCP backbone interface (implements `RNS::InterfaceImpl`) with HDLC framing |
+| `TcpInterface.h` | TCP interface for both backbone and local server (implements `RNS::InterfaceImpl`) with HDLC framing, unique naming, and 10 Mbps bitrate |
 | `Display.h` | OLED display layout — boundary-specific status page |
+| `flash.py` | Flash utility — list serial ports, download from GitHub, merge & flash firmware |
 | `Boards.h` | Board variant definition for `heltec32v4_boundary` |
 | `platformio.ini` | Build targets: `heltec_V4_boundary` and `heltec_V4_boundary-local` |
 
@@ -276,7 +335,7 @@ The firmware depends on [microReticulum](https://github.com/attermann/microRetic
 
 | File | Changes |
 |------|---------|
-| `Transport.cpp` | Selective caching, default route forwarding, boundary-aware culling, `get_cached_packet()` unpack fix, memory limits |
+| `Transport.cpp` | Selective caching, default route forwarding, boundary-aware culling, `get_cached_packet()` unpack fix, path table `erase()+insert()` fix, memory limits |
 | `Transport.h` | `MODE_BOUNDARY`, `PacketEntry`, `Callbacks`, `cull_path_table()`, configurable table sizes |
 | `Identity.cpp` | `_known_destinations_maxsize` = 24, `cull_known_destinations()` |
 | `Type.h` | `MODE_BOUNDARY` = 0x20, reduced `MAX_QUEUED_ANNOUNCES`, `MAX_RECEIPTS`, shorter timeouts |
