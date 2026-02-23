@@ -20,7 +20,7 @@
 // The boundary node operates with TWO RNS interfaces:
 //
 //   1. LoRaInterface (MODE_GATEWAY) — radio side, handles LoRa mesh
-//   2. TcpInterface  (MODE_BOUNDARY) — WiFi side, connects to TCP backbone
+//   2. BackboneInterface (MODE_BOUNDARY) — WiFi side, connects to TCP backbone
 //
 // RNS Transport is ALWAYS enabled in boundary mode.
 // Packets received on either interface are routed through Transport

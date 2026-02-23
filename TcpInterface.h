@@ -1,9 +1,9 @@
 // Copyright (C) 2026, Boundary Mode Extension
 // Based on microReticulum_Firmware by Mark Qvist
 //
-// TcpInterface — An RNS InterfaceImpl that bridges the WiFi TCP
-// connection as a second RNS transport interface, enabling
-// Boundary mode operation between LoRa and TCP/IP backbone.
+// TcpInterface — An RNS InterfaceImpl that bridges a WiFi TCP
+// connection as an RNS transport interface. Used for both the
+// backbone (BackboneInterface) and local AP (LocalTcpInterface).
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -61,7 +61,7 @@ class TcpInterface : public RNS::InterfaceImpl {
 public:
     TcpInterface(TcpIfMode mode, uint16_t port = TCP_IF_DEFAULT_PORT,
                  const char* target_host = nullptr, uint16_t target_port = 0,
-                 const char* name = "TcpInterface")
+                 const char* name = "BackboneInterface")
         : RNS::InterfaceImpl(name),
           _mode(mode),
           _port(port),

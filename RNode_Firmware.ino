@@ -680,6 +680,7 @@ void setup() {
         );
         tcp_rns_interface = tcp_interface_ptr;
         tcp_rns_interface.mode(RNS::Type::Interface::MODE_BOUNDARY);
+        tcp_rns_interface.is_backbone(true);
         RNS::Transport::register_interface(tcp_rns_interface);
 
         {
