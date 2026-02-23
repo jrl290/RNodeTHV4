@@ -53,9 +53,39 @@ BUILD_DIR       = ".pio/build/heltec_V4_boundary"
 BOOTLOADER_BIN  = os.path.join(BUILD_DIR, "bootloader.bin")
 PARTITIONS_BIN  = os.path.join(BUILD_DIR, "partitions.bin")
 FIRMWARE_BIN    = os.path.join(BUILD_DIR, "rnode_firmware_heltec32v4_boundary.bin")
-BOOT_APP0_BIN   = os.path.expanduser(
-    "~/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin"
-)
+
+# ESP32 partition table magic bytes (first two bytes of a partition table entry)
+PARTITION_TABLE_MAGIC = b'\xaa\x50'
+
+def find_boot_app0():
+    """Find boot_app0.bin from PlatformIO framework packages.
+
+    Handles versioned package directories (e.g. framework-arduinoespressif32@3.20009.0).
+    """
+    pio_dir = os.path.expanduser("~/.platformio/packages")
+
+    # Try exact name first
+    exact = os.path.join(pio_dir, "framework-arduinoespressif32",
+                         "tools", "partitions", "boot_app0.bin")
+    if os.path.isfile(exact):
+        return exact
+
+    # Try versioned directories
+    if os.path.isdir(pio_dir):
+        for name in sorted(os.listdir(pio_dir), reverse=True):
+            if name.startswith("framework-arduinoespressif32"):
+                candidate = os.path.join(pio_dir, name, "tools", "partitions", "boot_app0.bin")
+                if os.path.isfile(candidate):
+                    return candidate
+
+    # Bundled fallback
+    bundled = os.path.join(os.path.dirname(__file__), "Release", "boot_app0.bin")
+    if os.path.isfile(bundled):
+        return bundled
+
+    return None
+
+BOOT_APP0_BIN = find_boot_app0()
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -212,15 +242,10 @@ def merge_firmware(output_path, esptool_cmd):
 
     # boot_app0 can come from PlatformIO or be bundled
     boot_app0 = BOOT_APP0_BIN
-    if not os.path.isfile(boot_app0):
-        # Check if bundled in Release/
-        alt = os.path.join(os.path.dirname(__file__), "Release", "boot_app0.bin")
-        if os.path.isfile(alt):
-            boot_app0 = alt
-        else:
-            print(f"Error: boot_app0.bin not found at {BOOT_APP0_BIN}")
-            print("       Run 'pio run -e heltec_V4_boundary' first, or install PlatformIO.")
-            return False
+    if not boot_app0 or not os.path.isfile(boot_app0):
+        print("Error: boot_app0.bin not found.")
+        print("       Run 'pio run -e heltec_V4_boundary' first, or install PlatformIO.")
+        return False
     required["boot_app0"] = boot_app0
 
     for name, path in required.items():
@@ -265,27 +290,29 @@ def flash_firmware(firmware_path, port, esptool_cmd, baud=BAUD_RATE):
     print(f"  Chip: {CHIP}  Baud: {baud}  Flash: {FLASH_SIZE}\n")
 
     # Determine if this is a merged binary (flash at 0x0) or app-only (flash at 0x10000)
-    # The app-only .bin for this project is ~800KB. The merged binary adds
-    # bootloader+partitions+boot_app0 padding (~64KB) so it's slightly larger
-    # but still well under 2MB. A true app-only binary won't have the bootloader
-    # signature at offset 0. Check for the ESP32 bootloader magic byte (0xE9).
+    #
+    # Both merged and app-only binaries start with 0xE9 (ESP32 image magic), so
+    # that byte alone cannot distinguish them. Instead, check for the partition
+    # table magic (0xAA 0x50) at offset 0x8000 — only merged binaries contain
+    # the partition table embedded at that offset.
     size = os.path.getsize(firmware_path)
     is_merged = False
     try:
         with open(firmware_path, "rb") as f:
-            magic = f.read(1)
-            if magic == b'\xe9':
-                # Has bootloader magic — this is a merged binary starting at 0x0
-                is_merged = True
+            if size > 0x8002:  # Must be large enough to contain partition table area
+                f.seek(0x8000)
+                pt_magic = f.read(2)
+                if pt_magic == PARTITION_TABLE_MAGIC:
+                    is_merged = True
     except Exception:
         pass
 
     if is_merged:
         flash_addr = f"0x{BOOTLOADER_ADDR:x}"
-        print(f"  Detected: merged binary (bootloader magic 0xE9) → flash at {flash_addr}")
+        print(f"  Detected: merged binary (partition table at 0x8000) -> flash at {flash_addr}")
     else:
         flash_addr = f"0x{APP_ADDR:x}"
-        print(f"  Detected: app-only binary → flash at {flash_addr}")
+        print(f"  Detected: app-only binary -> flash at {flash_addr}")
 
     cmd = esptool_cmd + [
         "--chip", CHIP,
@@ -319,6 +346,7 @@ Examples:
   python flash.py --file firmware.bin     # Flash a specific file
   python flash.py --merge-only            # Build merged binary from PlatformIO output
   python flash.py --port /dev/ttyACM0     # Specify serial port
+  python flash.py --erase --download      # Erase flash, then download and flash
         """,
     )
     parser.add_argument("--file", "-f", help="Path to firmware binary to flash")
@@ -330,6 +358,8 @@ Examples:
                         help="Merge PlatformIO build output into single binary, don't flash")
     parser.add_argument("--no-merge", action="store_true",
                         help="Skip merge step, use existing merged binary or --file")
+    parser.add_argument("--erase", action="store_true",
+                        help="Erase entire flash before writing (recommended for recovery)")
 
     args = parser.parse_args()
     baud = args.baud
@@ -414,6 +444,21 @@ Examples:
     if confirm and confirm != "y":
         print("Aborted.")
         sys.exit(0)
+
+    if args.erase:
+        print(f"Erasing flash on {port}...")
+        erase_cmd = esptool_cmd + [
+            "--chip", CHIP,
+            "--port", port,
+            "--baud", baud,
+            "erase_flash",
+        ]
+        result = subprocess.run(erase_cmd)
+        if result.returncode != 0:
+            print("\nErase FAILED.")
+            sys.exit(1)
+        print("Flash erased. Waiting for device to re-enumerate...")
+        time.sleep(3)
 
     if flash_firmware(firmware_path, port, esptool_cmd, baud):
         print()
