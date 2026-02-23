@@ -265,13 +265,27 @@ def flash_firmware(firmware_path, port, esptool_cmd, baud=BAUD_RATE):
     print(f"  Chip: {CHIP}  Baud: {baud}  Flash: {FLASH_SIZE}\n")
 
     # Determine if this is a merged binary (flash at 0x0) or app-only (flash at 0x10000)
+    # The app-only .bin for this project is ~800KB. The merged binary adds
+    # bootloader+partitions+boot_app0 padding (~64KB) so it's slightly larger
+    # but still well under 2MB. A true app-only binary won't have the bootloader
+    # signature at offset 0. Check for the ESP32 bootloader magic byte (0xE9).
     size = os.path.getsize(firmware_path)
-    if size > 1500000:
-        # Merged binary — includes bootloader, partitions, etc.
+    is_merged = False
+    try:
+        with open(firmware_path, "rb") as f:
+            magic = f.read(1)
+            if magic == b'\xe9':
+                # Has bootloader magic — this is a merged binary starting at 0x0
+                is_merged = True
+    except Exception:
+        pass
+
+    if is_merged:
         flash_addr = f"0x{BOOTLOADER_ADDR:x}"
+        print(f"  Detected: merged binary (bootloader magic 0xE9) → flash at {flash_addr}")
     else:
-        # App-only binary
         flash_addr = f"0x{APP_ADDR:x}"
+        print(f"  Detected: app-only binary → flash at {flash_addr}")
 
     cmd = esptool_cmd + [
         "--chip", CHIP,
