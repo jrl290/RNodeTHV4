@@ -60,24 +60,43 @@ BOOT_APP0_BIN   = os.path.expanduser(
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def find_esptool():
-    """Find esptool.py — bundled, pip-installed, or PlatformIO's copy."""
-    # 1. Bundled in Release/
-    bundled = os.path.join(os.path.dirname(__file__), "Release", "esptool", "esptool.py")
-    if os.path.isfile(bundled):
-        return [sys.executable, bundled]
+    """Find esptool.py — pip-installed, bundled, or PlatformIO's copy.
 
-    # 2. pip-installed esptool
+    Prefer pip-installed esptool first (handles its own deps), then fall
+    back to the bundled script — but only if pyserial is importable in
+    the current Python interpreter.
+    """
+    # 1. pip-installed esptool (standalone executable, no dep issues)
     if shutil.which("esptool.py"):
         return ["esptool.py"]
     if shutil.which("esptool"):
         return ["esptool"]
 
+    # Check if pyserial is available before using script-based esptool
+    try:
+        import serial  # noqa: F401
+        has_pyserial = True
+    except ImportError:
+        has_pyserial = False
+
+    # 2. Bundled in Release/
+    bundled = os.path.join(os.path.dirname(__file__), "Release", "esptool", "esptool.py")
+    if os.path.isfile(bundled) and has_pyserial:
+        return [sys.executable, bundled]
+
     # 3. PlatformIO's esptool
     pio_esptool = os.path.expanduser(
         "~/.platformio/packages/tool-esptoolpy/esptool.py"
     )
-    if os.path.isfile(pio_esptool):
+    if os.path.isfile(pio_esptool) and has_pyserial:
         return [sys.executable, pio_esptool]
+
+    # 4. Bundled exists but pyserial is missing — tell the user
+    if os.path.isfile(bundled) and not has_pyserial:
+        print("Found bundled esptool but pyserial is not installed.")
+        print("Install it with:  pip install pyserial")
+        print("Or install the standalone esptool:  pip install esptool")
+        sys.exit(1)
 
     return None
 
