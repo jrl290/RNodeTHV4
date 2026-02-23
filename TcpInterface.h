@@ -60,8 +60,9 @@ struct TcpClient {
 class TcpInterface : public RNS::InterfaceImpl {
 public:
     TcpInterface(TcpIfMode mode, uint16_t port = TCP_IF_DEFAULT_PORT,
-                 const char* target_host = nullptr, uint16_t target_port = 0)
-        : RNS::InterfaceImpl("TcpInterface"),
+                 const char* target_host = nullptr, uint16_t target_port = 0,
+                 const char* name = "TcpInterface")
+        : RNS::InterfaceImpl(name),
           _mode(mode),
           _port(port),
           _target_port(target_port),
@@ -77,11 +78,11 @@ public:
         _IN = true;
         _OUT = true;
         _HW_MTU = TCP_IF_HW_MTU;
-        // Report low bitrate + small announce_cap so that Transport
-        // rate-limits announce forwarding through this interface.
-        // Without this the backbone floods the ESP32 with announces.
-        // 500 bps ≈ LoRa-class throughput; announce_cap = 2% max bandwidth.
-        _bitrate = 500;
+        // TCP links are effectively 10 Mbps+. Setting a realistic
+        // bitrate lets Transport prefer TCP paths over LoRa when
+        // both exist for the same destination.
+        // announce_cap = 2% keeps backbone announce flooding in check.
+        _bitrate = 10000000;
         _announce_cap = 2.0;
         if (target_host != nullptr) {
             strncpy(_target_host, target_host, sizeof(_target_host) - 1);

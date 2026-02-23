@@ -472,6 +472,9 @@ void setup() {
     // Load LoRa config from EEPROM so the portal can show current values
     eeprom_conf_load();
 
+    // Load boundary config so the portal can show current/default values
+    boundary_load_config();
+
     // Enter config mode if: first boot with no config, OR button-triggered reboot
     bool need_config = boundary_needs_config();
     bool config_requested = (boundary_config_request == BOUNDARY_CONFIG_MAGIC);
@@ -695,7 +698,8 @@ void setup() {
             TCP_IF_MODE_SERVER,
             boundary_state.ap_tcp_port,
             "",  // no target host for server mode
-            0
+            0,
+            "LocalTcpInterface"
         );
         local_tcp_rns_interface = local_tcp_interface_ptr;
         local_tcp_rns_interface.mode(RNS::Type::Interface::MODE_ACCESS_POINT);

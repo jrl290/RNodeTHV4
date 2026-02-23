@@ -31,6 +31,7 @@
   
   int button_events = EVENT_CLICKS;
   int button_state = RELEASED;
+  bool display_lock_white = false;
   int debounce_state = button_state;
   unsigned long button_debounce_last = 0;
   unsigned long button_debounce_delay = 25;
@@ -81,6 +82,24 @@
         }
       }
     }
+
+    // ── Live hold indicator: turn display white when held >5s ──
+    #ifdef BOUNDARY_MODE
+    {
+      if (button_state == PRESSED && button_down_last > 0) {
+        unsigned long held = millis() - button_down_last;
+        if (held > 5000 && !display_lock_white) {
+          display_lock_white = true;
+          #if HAS_DISPLAY
+          if (disp_ready) {
+            display.fillScreen(SSD1306_WHITE);
+            display.display();
+          }
+          #endif
+        }
+      }
+    }
+    #endif
 
   }
 

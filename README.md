@@ -3,16 +3,19 @@
 A custom firmware for the **Heltec WiFi LoRa 32 V4** (ESP32-S3 + SX1262) that operates as a **Boundary Node** — bridging a local LoRa radio network with a remote TCP/IP backbone (such as [rmap.world](https://rmap.world)) over WiFi.
 
 ```
-  Android / Sideband                                            Remote
-  ┌──────────┐          ┌──────────────┐        WiFi         Reticulum
-  │ Sideband │◄── BT ──►│ RNode (V4)   │◄── TCP ──────────► Backbone
-  │   App    │          │ Boundary Mode│        ▲            (rnsd /
-  └──────────┘          └──────┬───────┘        │            rmap.world)
-                               │            ┌───┴───┐
-                          LoRa Radio        │ Router │
-                               │            └───────┘
-                        ◄── RF mesh ──►
-                         Other RNodes
+  Android / Sideband                                             Remote
+  ┌──────────┐          ┌────────────┐                         Reticulum
+  │ Sideband │◄── BT ──►│ RNode (BT) │                         Backbone
+  │   App    │          └─────┬──────┘                         (rnsd /
+  └──────────┘                │                                rmap.world)
+                         LoRa Radio                                ▲
+                              │            ┌──────────────┐  WiFi  │
+                       ◄── RF mesh ──────►│ RNodeTHV4    │◄─TCP──┘
+                              │            │ Boundary Node│    ▲
+                        Other RNodes       └──────────────┘    │
+                                                           ┌───┴───┐
+                                                           │ Router │
+                                                           └───────┘
 ```
 
 Built on [microReticulum](https://github.com/attermann/microReticulum) (a C++ port of the [Reticulum](https://reticulum.network/) network stack) and the [RNode firmware](https://github.com/markqvist/RNode_Firmware) by Mark Qvist.
@@ -70,7 +73,7 @@ The config portal activates automatically on:
 - **First boot** — when no saved configuration exists
 - **Button hold >5 seconds** — hold the PRG button for 5+ seconds, the device reboots into config mode
 
-When active, the device creates a WiFi access point named **`RNode-Boundary-Setup`** (open network). Connect to it and browse to `http://192.168.4.1`.
+When active, the device creates a WiFi access point named **`RNode-Boundary-Setup`** (open network). A captive portal should appear automatically when you connect; if not, browse to `http://192.168.4.1`.
 
 ### Config Page Options
 
@@ -103,7 +106,7 @@ The web form has four sections:
 | **Bandwidth** | 7.8 kHz – 500 kHz (typically `125 kHz`) |
 | **Spreading Factor** | SF6 – SF12 (typically `SF7` for backbone, `SF10` for long range) |
 | **Coding Rate** | 4/5 – 4/8 |
-| **TX Power** | 2 – 22 dBm |
+| **TX Power** | 2 – 28 dBm |
 
 After saving, the device reboots with the new configuration applied.
 
@@ -141,7 +144,7 @@ The 128×64 OLED is split into two panels:
 
 ## Interface Modes
 
-The firmware runs **two RNS interfaces** simultaneously, using different interface modes to control announce propagation and routing behavior:
+The firmware runs up to **three RNS interfaces** simultaneously, using different interface modes to control announce propagation and routing behavior:
 
 ### LoRa Interface — `MODE_ACCESS_POINT`
 
@@ -152,10 +155,10 @@ The LoRa radio operates in **Access Point mode**. In Reticulum, this means:
 
 ### TCP Backbone Interface — `MODE_BOUNDARY`
 
-The TCP backbone connection uses a custom **Boundary mode** (`0x20`), a new interface mode added to microReticulum for this firmware. Boundary mode means:
+The TCP backbone connection uses `MODE_BOUNDARY` (`0x20`), a custom implementation of the Reticulum boundary concept adapted for the memory-constrained ESP32 environment. In this implementation, boundary mode means:
 - Incoming announces from the backbone are received and cached, but **not stored in the path table by default** — only stored when specifically requested via a path request from a local LoRa node
 - This prevents the path table (limited to 48 entries on ESP32) from being overwhelmed by thousands of backbone destinations
-- When the path table needs to be culled, **Boundary-mode paths are evicted first**, preserving locally-needed LoRa paths
+- When the path table needs to be culled, **boundary-mode paths are evicted first**, preserving locally-needed LoRa paths
 
 ### Optional Local TCP Server — `MODE_ACCESS_POINT`
 
@@ -211,6 +214,8 @@ This acts as a **default route** — any packet the boundary can't route locally
 The original microReticulum `get_cached_packet()` function called `update_hash()` after deserializing cached packets from flash. However, `update_hash()` only computes the packet hash — it does **not** parse the raw bytes into fields like `destination_hash`, `data`, `flags`, etc.
 
 This was changed to call `unpack()` instead, which parses all packet fields AND computes the hash. Without this fix, path responses contained empty destination hashes and were silently dropped by LoRa nodes.
+
+> **Note:** `unpack()` only parses the plaintext routing envelope (destination hash, flags, hops, transport headers). It does not decrypt the end-to-end encrypted payload. Every Reticulum transport node performs equivalent header parsing during normal routing — this is standard behavior, not a security concern.
 
 ## Connecting to the Backbone
 

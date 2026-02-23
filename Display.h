@@ -1196,7 +1196,14 @@ bool epd_blanked = false;
   }
 #endif
 
+#ifdef BOUNDARY_MODE
+extern bool display_lock_white;
+#endif
+
 void update_display(bool blank = false) {
+  #ifdef BOUNDARY_MODE
+  if (display_lock_white) return;
+  #endif
   display_updating = true;
   if (blank == true) {
     last_disp_update = millis()-disp_update_interval-1;
