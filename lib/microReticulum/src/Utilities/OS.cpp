@@ -3,6 +3,10 @@
 #include "../Type.h"
 #include "../Log.h"
 
+#if defined(ESP32) && defined(BOARD_HAS_PSRAM)
+#include <esp_heap_caps.h>
+#endif
+
 using namespace RNS;
 using namespace RNS::Utilities;
 
@@ -47,7 +51,18 @@ void* operator new(size_t size) {
 	//if (OS::_tlsf == nullptr) {
 	if (!_tlsf_init) {
 		_tlsf_init = true;
-#if defined(ESP32)
+#if defined(ESP32) && defined(BOARD_HAS_PSRAM)
+		// Use PSRAM for TLSF pool — frees internal SRAM for WiFi/LoRa/stack.
+		// PSRAM is slower (QSPI) but has 2MB vs ~170KB free internal.
+		_contiguous_size = ESP.getMaxAllocPsram();
+		TRACEF("psram contiguous_size: %u", _contiguous_size);
+		if (_buffer_size == 0) {
+			_buffer_size = (_contiguous_size * 4) / 5;
+		}
+		size_t align = tlsf_align_size();
+		_buffer_size &= ~(align - 1);
+		void* raw_buffer = heap_caps_aligned_alloc(align, _buffer_size, MALLOC_CAP_SPIRAM);
+#elif defined(ESP32)
 		// CBA Still unknown why the call to tlsf_create_with_pool() is so flaky on ESP32 with calculated buffer size. Reuires more research and unit tests.
 		_contiguous_size = ESP.getMaxAllocHeap();
 		TRACEF("contiguous_size: %u", _contiguous_size);

@@ -647,13 +647,12 @@ void setup() {
       // ── Boundary Mode: Load config and optionally set up WiFi + TCP ──
       HEAD("Boundary Mode: Initializing...", RNS::LOG_TRACE);
 
-      // Reduce table sizes to conserve heap on ESP32.
-      // Default 100 entries for each table fragments heap to critical levels.
-      // 48 entries gives enough room for local paths plus some backbone paths.
+      // With TLSF pool moved to PSRAM we have plenty of room.
+      // 128 path entries supports ~15-20 devices comfortably.
       // cull_path_table() is patched to evict backbone paths first, preserving
       // local (LoRa / local-TCP) paths needed for inbound message delivery.
-      RNS::Transport::path_table_maxsize(48);
-      RNS::Transport::path_table_maxpersist(16);
+      RNS::Transport::path_table_maxsize(128);
+      RNS::Transport::path_table_maxpersist(32);
       boundary_load_config();
 
       // Start WiFi if enabled

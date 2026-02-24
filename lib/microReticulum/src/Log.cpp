@@ -8,8 +8,11 @@
 
 using namespace RNS;
 
-//LogLevel _level = LOG_VERBOSE;
+#ifdef NDEBUG
+LogLevel _level = LOG_VERBOSE;
+#else
 LogLevel _level = LOG_TRACE;
+#endif
 //LogLevel _level = LOG_MEM;
 RNS::log_callback _on_log = nullptr;
 char _datetime[20];

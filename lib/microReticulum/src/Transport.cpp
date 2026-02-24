@@ -1327,13 +1327,26 @@ static bool is_backbone_interface(const Interface& iface) {
 	if (accept) {
 		TRACE("Transport::inbound: Packet accepted by filter");
 
-		// BOUNDARY MODE: Gate backbone traffic using two whitelists.
-		// Whitelist 1: local device addresses (LoRa + LocalTCP)
-		// Whitelist 2: addresses mentioned in packets from local devices
+		// BOUNDARY MODE: Comprehensive firewall for backbone traffic.
+		//
+		// Three rules:
+		//   1. Addresses that touch local interfaces (RNode/LoRa, LocalTCP)
+		//      get whitelisted on the backbone interface.
+		//   2. Every packet referencing a whitelisted address — ALL identifiers
+		//      in that packet also get whitelisted (link hashes, announces,
+		//      requests, proofs, truncated hashes, transport IDs, EVERYTHING).
+		//   3. Everything else gets blocked on the backbone interface.
+		//
+		// Note on ratchets: ratchet public keys are embedded in announce
+		// payloads and flow through unchanged since we forward the entire
+		// announce verbatim. Ratchet IDs are derived locally and never
+		// appear as transport-level routing identifiers, so no special
+		// handling is needed here.
 #ifdef BOUNDARY_MODE
 		{
 			bool is_backbone = is_backbone_interface(packet.receiving_interface());
 			if (is_backbone) {
+				// === BACKBONE PACKET: gate against all whitelists ===
 				bool allowed = false;
 				// Whitelist 1: destination is a local device
 				if (_boundary_local_addresses.find(packet.destination_hash()) != _boundary_local_addresses.end()) {
@@ -1343,33 +1356,60 @@ static bool is_backbone_interface(const Interface& iface) {
 				else if (_boundary_mentioned_addresses.find(packet.destination_hash()) != _boundary_mentioned_addresses.end()) {
 					allowed = true;
 				}
-				// Allow return traffic: proofs routed via reverse_table
-				// (destination is the packet hash of a packet we forwarded)
+				// Return traffic: proofs routed via reverse_table
 				else if (_reverse_table.find(packet.destination_hash()) != _reverse_table.end()) {
 					allowed = true;
 				}
-				// Allow return traffic: link proofs and link data routed via link_table
-				// (destination is the link_id of a link we're transporting)
+				// Return traffic: link proofs and link data via link_table
 				else if (_link_table.find(packet.destination_hash()) != _link_table.end()) {
 					allowed = true;
 				}
-				// Allow packets addressed to our own control destinations
-				// (e.g. path request handler) so backbone nodes can discover
-				// paths to local devices through us
+				// Our own control destinations (path requests, tunnel synthesize)
 				else if (_control_hashes.find(packet.destination_hash()) != _control_hashes.end()) {
 					allowed = true;
 				}
-				// Allow packets addressed to our own registered destinations
+				// Our own registered destinations
 				else if (_destinations.find(packet.destination_hash()) != _destinations.end()) {
+					allowed = true;
+				}
+				// HEADER_2 packet addressed to us as transport node — the
+				// sending node routed this to us so we must accept it even
+				// if we haven't seen this specific destination before
+				else if (packet.header_type() == Type::Packet::HEADER_2
+				         && packet.transport_id() == _identity.hash()) {
 					allowed = true;
 				}
 				if (!allowed) {
 					return;
 				}
+				// === TRANSITIVE WHITELIST ===
+				// Extract ALL identifiers from this allowed backbone packet
+				// so that future related traffic (proofs, link data, return
+				// packets) will also pass through the filter.
+				_boundary_mentioned_addresses.insert(packet.destination_hash());
+				if (packet.header_type() == Type::Packet::HEADER_2 && packet.transport_id()) {
+					_boundary_mentioned_addresses.insert(packet.transport_id());
+				}
+				if (packet.packet_type() == Type::Packet::LINKREQUEST) {
+					_boundary_mentioned_addresses.insert(Link::link_id_from_lr_packet(packet));
+				}
+				_boundary_mentioned_addresses.insert(packet.getTruncatedHash());
 			}
 			else {
-				// Packet from local interface: add its destination to Whitelist 2
+				// === LOCAL DEVICE PACKET ===
+				// Whitelist ALL identifiers from this packet so future
+				// related backbone traffic will be allowed through.
+				// Every identifier that touches a local interface gets
+				// whitelisted on the backbone — link hashes, announces,
+				// requests, proofs, EVERYTHING.
 				_boundary_mentioned_addresses.insert(packet.destination_hash());
+				if (packet.header_type() == Type::Packet::HEADER_2 && packet.transport_id()) {
+					_boundary_mentioned_addresses.insert(packet.transport_id());
+				}
+				if (packet.packet_type() == Type::Packet::LINKREQUEST) {
+					_boundary_mentioned_addresses.insert(Link::link_id_from_lr_packet(packet));
+				}
+				_boundary_mentioned_addresses.insert(packet.getTruncatedHash());
 			}
 		}
 #endif
@@ -1545,6 +1585,16 @@ static bool is_backbone_interface(const Interface& iface) {
 
 						Interface outbound_interface = destination_entry.receiving_interface();
 
+#ifdef BOUNDARY_MODE
+						// In boundary mode, never route a packet from backbone back to backbone.
+						// The upstream server sent us this packet because we are the next hop,
+						// so the destination must be on our local side.
+						if (is_backbone_interface(packet.receiving_interface()) && is_backbone_interface(outbound_interface)) {
+							// Path table incorrectly points to backbone. Skip forwarding.
+						}
+						else
+#endif
+						{
 						if (packet.packet_type() == Type::Packet::LINKREQUEST) {
 							TRACE("Transport::inbound: Packet is next-hop LINKREQUEST");
 							double now = OS::time();
@@ -1580,6 +1630,7 @@ static bool is_backbone_interface(const Interface& iface) {
 						transmit(outbound_interface, new_raw);
 #endif
 						destination_entry._timestamp = OS::time();
+						} // boundary mode else
 					}
 					else {
 #ifdef BOUNDARY_MODE
@@ -1696,16 +1747,52 @@ static bool is_backbone_interface(const Interface& iface) {
 							auto destination_iter = _destination_table.find(packet.destination_hash());
 							if (destination_iter != _destination_table.end()) {
 								DestinationEntry& dest_entry = (*destination_iter).second;
+								Bytes next_hop = dest_entry._received_from;
+								uint8_t remaining_hops = dest_entry._hops;
 								Interface outbound_interface = dest_entry.receiving_interface();
 
-								// Create reverse_table entry so proof can get back
-								ReverseEntry reverse_entry(
-									packet.receiving_interface(), outbound_interface, OS::time()
-								);
-								_reverse_table.insert({packet.getTruncatedHash(), reverse_entry});
+								// Build properly routed packet based on remaining hops,
+								// mirroring the standard transport forwarding logic.
+								Bytes new_raw(512);
+								if (remaining_hops > 1) {
+									// Multi-hop: wrap with HEADER_2/TRANSPORT
+									uint8_t new_flags = (Type::Packet::HEADER_2) << 6
+										| (Type::Transport::TRANSPORT) << 4
+										| (packet.flags() & 0b00001111);
+									new_raw << new_flags;
+									new_raw << packet.hops();
+									new_raw << next_hop;            // transport_id
+									new_raw << packet.raw().mid(2); // destination_hash + payload
+								}
+								else {
+									// Direct or single-hop: send as HEADER_1
+									new_raw << packet.raw().left(1);
+									new_raw << packet.hops();
+									new_raw << packet.raw().mid(2);
+								}
 
-								DEBUG("BOUNDARY: Forwarding backbone packet to local device for " + packet.destination_hash().toHex() + " via " + outbound_interface.toString());
-								transmit(outbound_interface, packet.raw());
+								// Create link_table or reverse_table entry for return traffic
+								if (packet.packet_type() == Type::Packet::LINKREQUEST) {
+									double now = OS::time();
+									double proof_timeout = now + Type::Link::ESTABLISHMENT_TIMEOUT_PER_HOP
+										* std::max((uint8_t)1, remaining_hops);
+									LinkEntry link_entry(
+										now, next_hop, outbound_interface, remaining_hops,
+										packet.receiving_interface(), packet.hops(),
+										packet.destination_hash(), false, proof_timeout
+									);
+									_link_table.insert({Link::link_id_from_lr_packet(packet), link_entry});
+									DEBUG("BOUNDARY: Created link_table entry for backbone LINKREQUEST, link_id=" + Link::link_id_from_lr_packet(packet).toHex());
+								}
+								else {
+									ReverseEntry reverse_entry(
+										packet.receiving_interface(), outbound_interface, OS::time()
+									);
+									_reverse_table.insert({packet.getTruncatedHash(), reverse_entry});
+								}
+
+								DEBUG("BOUNDARY: Forwarding backbone packet (" + std::to_string(remaining_hops) + " hops) to local device for " + packet.destination_hash().toHex() + " via " + outbound_interface.toString());
+								transmit(outbound_interface, new_raw);
 								dest_entry._timestamp = OS::time();
 							}
 						}
@@ -2189,9 +2276,13 @@ static bool is_backbone_interface(const Interface& iface) {
 							packet.get_hash()
 						);
 						// CBA ACCUMULATES
+						// Erase existing entry so insert overwrites (matching Python dict[key]=value)
+						bool path_existed = (_destination_table.erase(packet.destination_hash()) > 0);
 						if (_destination_table.insert({packet.destination_hash(), destination_table_entry}).second) {
-							++_destinations_added;
-							cull_path_table();
+							if (!path_existed) {
+								++_destinations_added;
+								cull_path_table();
+							}
 						}
 
 						DEBUG("Destination " + packet.destination_hash().toHex() + " is now " + std::to_string(announce_hops) + " hops away via " + received_from.toHex() + " on " + packet.receiving_interface().toString());

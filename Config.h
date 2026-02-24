@@ -72,7 +72,11 @@
     #endif
 
 	// MCU independent configuration parameters
+	#ifdef BOUNDARY_MODE
+	const long serial_baudrate  = 921600;
+	#else
 	const long serial_baudrate  = 115200;
+	#endif
 
 	// SX1276 RSSI offset to get dBm value from
 	// packet RSSI register

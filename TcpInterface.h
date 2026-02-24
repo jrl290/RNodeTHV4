@@ -23,7 +23,11 @@
 
 // ─── TCP Interface Configuration ─────────────────────────────────────────────
 #define TCP_IF_DEFAULT_PORT      4242
+#ifdef BOUNDARY_MODE
+#define TCP_IF_MAX_CLIENTS       8
+#else
 #define TCP_IF_MAX_CLIENTS       4
+#endif
 #define TCP_IF_HW_MTU            1064
 #define TCP_IF_CONNECT_TIMEOUT   6000    // ms
 #define TCP_IF_WRITE_TIMEOUT     2000    // ms — short to avoid WDT

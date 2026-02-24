@@ -57,6 +57,38 @@ FIRMWARE_BIN    = os.path.join(BUILD_DIR, "rnode_firmware_heltec32v4_boundary.bi
 # ESP32 partition table magic bytes (first two bytes of a partition table entry)
 PARTITION_TABLE_MAGIC = b'\xaa\x50'
 
+
+def is_merged_binary(firmware_path):
+    """Check whether a firmware file is a merged binary (contains bootloader +
+    partition table) or an app-only binary.
+
+    Returns True for merged, False for app-only.
+    """
+    try:
+        size = os.path.getsize(firmware_path)
+        if size > 0x8002:
+            with open(firmware_path, "rb") as f:
+                f.seek(0x8000)
+                return f.read(2) == PARTITION_TABLE_MAGIC
+    except Exception:
+        pass
+    return False
+
+
+def _find_in_platformio_or_release(build_path, release_name):
+    """Find a file in the PlatformIO build output or the bundled Release/ dir."""
+    # 1. PlatformIO build output
+    if os.path.isfile(build_path):
+        return build_path
+
+    # 2. Bundled in Release/
+    bundled = os.path.join(os.path.dirname(__file__), "Release", release_name)
+    if os.path.isfile(bundled):
+        return bundled
+
+    return None
+
+
 def find_boot_app0():
     """Find boot_app0.bin from PlatformIO framework packages.
 
@@ -84,6 +116,17 @@ def find_boot_app0():
         return bundled
 
     return None
+
+
+def find_bootloader():
+    """Find bootloader.bin from PlatformIO build output or Release/ bundle."""
+    return _find_in_platformio_or_release(BOOTLOADER_BIN, "bootloader.bin")
+
+
+def find_partitions():
+    """Find partitions.bin from PlatformIO build output or Release/ bundle."""
+    return _find_in_platformio_or_release(PARTITIONS_BIN, "partitions.bin")
+
 
 BOOT_APP0_BIN = find_boot_app0()
 
@@ -231,34 +274,13 @@ def download_firmware(dest_path):
     return True
 
 
-def merge_firmware(output_path, esptool_cmd):
-    """Merge bootloader + partitions + boot_app0 + app into a single binary."""
-    # Check all required files exist
-    required = {
-        "bootloader": BOOTLOADER_BIN,
-        "partitions": PARTITIONS_BIN,
-        "firmware":   FIRMWARE_BIN,
-    }
-
-    # boot_app0 can come from PlatformIO or be bundled
-    boot_app0 = BOOT_APP0_BIN
-    if not boot_app0 or not os.path.isfile(boot_app0):
-        print("Error: boot_app0.bin not found.")
-        print("       Run 'pio run -e heltec_V4_boundary' first, or install PlatformIO.")
-        return False
-    required["boot_app0"] = boot_app0
-
-    for name, path in required.items():
-        if not os.path.isfile(path):
-            print(f"Error: {name} not found: {path}")
-            print("Run 'pio run -e heltec_V4_boundary' to build first.")
-            return False
-
+def _do_merge(output_path, esptool_cmd, bootloader, partitions, boot_app0, firmware):
+    """Low-level merge: combine the four components into a single binary."""
     print("Merging firmware components...")
-    print(f"  Bootloader: {BOOTLOADER_BIN}  @ 0x{BOOTLOADER_ADDR:04x}")
-    print(f"  Partitions: {PARTITIONS_BIN}  @ 0x{PARTITIONS_ADDR:04x}")
-    print(f"  boot_app0:  {boot_app0}       @ 0x{BOOT_APP0_ADDR:04x}")
-    print(f"  Firmware:   {FIRMWARE_BIN}    @ 0x{APP_ADDR:05x}")
+    print(f"  Bootloader: {bootloader}  @ 0x{BOOTLOADER_ADDR:04x}")
+    print(f"  Partitions: {partitions}  @ 0x{PARTITIONS_ADDR:04x}")
+    print(f"  boot_app0:  {boot_app0}   @ 0x{BOOT_APP0_ADDR:04x}")
+    print(f"  Firmware:   {firmware}    @ 0x{APP_ADDR:05x}")
 
     cmd = esptool_cmd + [
         "--chip", CHIP,
@@ -267,10 +289,10 @@ def merge_firmware(output_path, esptool_cmd):
         "--flash_freq", FLASH_FREQ,
         "--flash_size", FLASH_SIZE,
         "-o", output_path,
-        f"0x{BOOTLOADER_ADDR:x}", BOOTLOADER_BIN,
-        f"0x{PARTITIONS_ADDR:x}", PARTITIONS_BIN,
+        f"0x{BOOTLOADER_ADDR:x}", bootloader,
+        f"0x{PARTITIONS_ADDR:x}", partitions,
         f"0x{BOOT_APP0_ADDR:x}",  boot_app0,
-        f"0x{APP_ADDR:x}",        FIRMWARE_BIN,
+        f"0x{APP_ADDR:x}",        firmware,
     ]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -282,6 +304,67 @@ def merge_firmware(output_path, esptool_cmd):
     print(f"\nMerged binary: {output_path} ({size:,} bytes)")
     print(f"SHA-256: {sha256_file(output_path)[:16]}...")
     return True
+
+
+def merge_firmware(output_path, esptool_cmd):
+    """Merge bootloader + partitions + boot_app0 + app into a single binary.
+
+    Uses PlatformIO build output, falling back to bundled Release/ copies
+    for the boot components.
+    """
+    bootloader = find_bootloader()
+    partitions = find_partitions()
+    boot_app0  = BOOT_APP0_BIN
+    firmware   = FIRMWARE_BIN
+
+    missing = []
+    if not bootloader:         missing.append(("bootloader", BOOTLOADER_BIN))
+    if not partitions:         missing.append(("partitions", PARTITIONS_BIN))
+    if not boot_app0:          missing.append(("boot_app0",  "(not found)"))
+    if not os.path.isfile(firmware):
+        missing.append(("firmware", firmware))
+
+    if missing:
+        for name, path in missing:
+            print(f"Error: {name} not found: {path}")
+        print("Run 'pio run -e heltec_V4_boundary' to build first.")
+        return False
+
+    return _do_merge(output_path, esptool_cmd, bootloader, partitions, boot_app0, firmware)
+
+
+def auto_merge_app_binary(app_binary_path, esptool_cmd):
+    """Auto-merge an app-only binary with boot components for a full flash.
+
+    Finds bootloader, partitions, and boot_app0 from PlatformIO build output
+    or the bundled Release/ directory, then merges them with the supplied
+    app binary into a temporary merged file.
+
+    Returns the path to the merged binary on success, or None on failure.
+    """
+    bootloader = find_bootloader()
+    partitions = find_partitions()
+    boot_app0  = BOOT_APP0_BIN
+
+    missing = []
+    if not bootloader: missing.append("bootloader.bin")
+    if not partitions: missing.append("partitions.bin")
+    if not boot_app0:  missing.append("boot_app0.bin")
+
+    if missing:
+        print(f"Cannot auto-merge: missing {', '.join(missing)}")
+        print("Place them in the Release/ folder alongside flash.py, or")
+        print("build with PlatformIO: pio run -e heltec_V4_boundary")
+        return None
+
+    # Create merged binary next to the app binary
+    base, ext = os.path.splitext(app_binary_path)
+    merged_path = f"{base}_merged{ext}"
+
+    print("Auto-merging app-only binary with boot components...")
+    if _do_merge(merged_path, esptool_cmd, bootloader, partitions, boot_app0, app_binary_path):
+        return merged_path
+    return None
 
 
 def reset_to_bootloader(port):
@@ -323,22 +406,7 @@ def flash_firmware(firmware_path, port, esptool_cmd, baud=BAUD_RATE):
     print(f"  Chip: {CHIP}  Baud: {baud}  Flash: {FLASH_SIZE}\n")
 
     # Determine if this is a merged binary (flash at 0x0) or app-only (flash at 0x10000)
-    #
-    # Both merged and app-only binaries start with 0xE9 (ESP32 image magic), so
-    # that byte alone cannot distinguish them. Instead, check for the partition
-    # table magic (0xAA 0x50) at offset 0x8000 — only merged binaries contain
-    # the partition table embedded at that offset.
-    size = os.path.getsize(firmware_path)
-    is_merged = False
-    try:
-        with open(firmware_path, "rb") as f:
-            if size > 0x8002:  # Must be large enough to contain partition table area
-                f.seek(0x8000)
-                pt_magic = f.read(2)
-                if pt_magic == PARTITION_TABLE_MAGIC:
-                    is_merged = True
-    except Exception:
-        pass
+    is_merged = is_merged_binary(firmware_path)
 
     if is_merged:
         flash_addr = f"0x{BOOTLOADER_ADDR:x}"
@@ -499,6 +567,36 @@ Examples:
             erase_choice = ""
         if erase_choice == "y":
             args.erase = True
+
+    # ── Safety check: erase + app-only → auto-merge ────────────────────────
+    if args.erase and not is_merged_binary(firmware_path):
+        print()
+        print("╔══════════════════════════════════════════════════════════════╗")
+        print("║  Erase selected with app-only binary — auto-merging boot   ║")
+        print("║  components (bootloader + partition table + boot_app0) so   ║")
+        print("║  the device remains bootable after erase.                  ║")
+        print("╚══════════════════════════════════════════════════════════════╝")
+        print()
+        merged = auto_merge_app_binary(firmware_path, esptool_cmd)
+        if merged:
+            firmware_path = merged
+            print(f"\nUsing auto-merged binary: {firmware_path}")
+            print(f"  Size: {os.path.getsize(firmware_path):,} bytes")
+            print()
+        else:
+            print()
+            print("Auto-merge failed. Options:")
+            print("  1) Skip erase and flash app-only (preserves existing NVS/bootloader)")
+            print("  2) Abort")
+            try:
+                fallback = input("\nSkip erase and continue with app-only flash? [Y/n] ").strip().lower()
+            except EOFError:
+                fallback = ""
+            if fallback == "n":
+                print("Aborted.")
+                sys.exit(1)
+            args.erase = False
+            print("Erase skipped. Continuing with app-only flash...\n")
 
     confirm = input("\nFlash firmware? [Y/n] ").strip().lower()
     if confirm and confirm != "y":
