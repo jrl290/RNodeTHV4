@@ -5,12 +5,18 @@ RNodeTHV4 Flash Utility
 Flash the RNodeTHV4 boundary node firmware to a Heltec WiFi LoRa 32 V4.
 No PlatformIO required — just Python 3 and a USB cable.
 
+Default mode flashes only the app partition (0x10000), preserving
+bootloader, partition table, NVS, and EEPROM settings.
+
 Usage:
-    # Flash a pre-built merged binary (from GitHub Releases or local build)
+    # Update firmware (preserves WiFi/boundary settings)
     python flash.py
 
-    # Flash a specific file
-    python flash.py --file rnodethv4_firmware.bin
+    # Full flash with merged binary (overwrites everything)
+    python flash.py --full
+
+    # Flash a specific file (auto-detects merged vs app-only)
+    python flash.py --file firmware.bin
 
     # Download latest from GitHub and flash
     python flash.py --download
@@ -18,7 +24,7 @@ Usage:
     # Specify serial port manually
     python flash.py --port /dev/ttyACM0
 
-    # Just build the merged binary (requires PlatformIO build output)
+    # Just build the merged binary (for GitHub Releases)
     python flash.py --merge-only
 """
 
@@ -442,12 +448,13 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python flash.py                         # Flash local merged binary
+  python flash.py                         # App-only update (preserves settings)
+  python flash.py --full                  # Full flash with merged binary
   python flash.py --download              # Download latest release and flash
   python flash.py --file firmware.bin     # Flash a specific file
-  python flash.py --merge-only            # Build merged binary from PlatformIO output
+  python flash.py --merge-only            # Build merged binary for release
   python flash.py --port /dev/ttyACM0     # Specify serial port
-  python flash.py --erase --download      # Erase flash, then download and flash
+  python flash.py --erase --full          # Erase flash, then full flash
         """,
     )
     parser.add_argument("--file", "-f", help="Path to firmware binary to flash")
@@ -457,10 +464,10 @@ Examples:
                         help="Download latest firmware from GitHub Releases")
     parser.add_argument("--merge-only", action="store_true",
                         help="Merge PlatformIO build output into single binary, don't flash")
-    parser.add_argument("--no-merge", action="store_true",
-                        help="Skip merge step, use existing merged binary or --file")
+    parser.add_argument("--full", action="store_true",
+                        help="Flash merged binary (bootloader + partitions + app) — overwrites everything")
     parser.add_argument("--erase", action="store_true",
-                        help="Erase entire flash before writing (recommended for recovery)")
+                        help="Erase entire flash before writing (implies --full)")
 
     args = parser.parse_args()
     baud = args.baud
@@ -478,6 +485,10 @@ Examples:
         print("Install it with:  pip install esptool")
         sys.exit(1)
     print(f"Using esptool: {' '.join(esptool_cmd)}")
+
+    # --erase implies --full (after erase, device needs bootloader + partitions)
+    if args.erase:
+        args.full = True
 
     # Determine firmware file
     firmware_path = None
@@ -500,26 +511,43 @@ Examples:
             sys.exit(1)
         return
 
-    else:
-        # Try to find or create a merged binary
-        if os.path.isfile(MERGED_FILENAME) and not args.no_merge:
-            # Check if PlatformIO build is newer
-            if os.path.isfile(FIRMWARE_BIN):
+    elif args.full:
+        # Full flash: use or create merged binary
+        if os.path.isfile(FIRMWARE_BIN):
+            # Build exists — (re-)merge
+            if os.path.isfile(MERGED_FILENAME):
                 build_time = os.path.getmtime(FIRMWARE_BIN)
                 merge_time = os.path.getmtime(MERGED_FILENAME)
                 if build_time > merge_time:
                     print("Build output is newer than merged binary, re-merging...")
                     if not merge_firmware(MERGED_FILENAME, esptool_cmd):
                         sys.exit(1)
-            firmware_path = MERGED_FILENAME
-        elif os.path.isfile(FIRMWARE_BIN):
-            # Build exists but no merged binary — create one
-            print("Found PlatformIO build output, creating merged binary...")
-            if not merge_firmware(MERGED_FILENAME, esptool_cmd):
-                sys.exit(1)
+            else:
+                print("Creating merged binary from PlatformIO build output...")
+                if not merge_firmware(MERGED_FILENAME, esptool_cmd):
+                    sys.exit(1)
             firmware_path = MERGED_FILENAME
         elif os.path.isfile(MERGED_FILENAME):
             firmware_path = MERGED_FILENAME
+        else:
+            print("No firmware found for full flash!")
+            print()
+            print("Options:")
+            print("  1. Build with PlatformIO first:  pio run -e heltec_V4_boundary")
+            print("  2. Download from GitHub:         python flash.py --download")
+            print("  3. Specify a file:               python flash.py --file <path>")
+            sys.exit(1)
+
+    else:
+        # Default: app-only flash (preserves settings)
+        if os.path.isfile(FIRMWARE_BIN):
+            firmware_path = FIRMWARE_BIN
+            print(f"App-only update (preserves WiFi/boundary settings)")
+            print(f"  Use --full for a complete flash, or --erase for recovery.")
+        elif os.path.isfile(MERGED_FILENAME):
+            firmware_path = MERGED_FILENAME
+            print(f"No build output found, using merged binary: {MERGED_FILENAME}")
+            print(f"  Note: merged binary will overwrite bootloader + partitions.")
         else:
             print("No firmware found!")
             print()
@@ -562,11 +590,12 @@ Examples:
     # Offer erase unless --erase was already passed
     if not args.erase:
         try:
-            erase_choice = input("Erase flash before writing? (recommended for recovery) [y/N] ").strip().lower()
+            erase_choice = input("Erase flash before writing? (wipes all settings) [y/N] ").strip().lower()
         except EOFError:
             erase_choice = ""
         if erase_choice == "y":
             args.erase = True
+            # Erase needs bootloader+partitions, auto-merge if we have app-only
 
     # ── Safety check: erase + app-only → auto-merge ────────────────────────
     if args.erase and not is_merged_binary(firmware_path):
