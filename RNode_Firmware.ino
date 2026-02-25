@@ -2229,6 +2229,71 @@ void loop() {
   }
 
 #ifdef BOUNDARY_MODE
+  // ── WiFi disconnect watchdog ──────────────────────────────────────────────
+  // When WiFi drops, dump diagnostic info and halt serial output so the
+  // operator can read the last log lines over USB.  The device keeps running
+  // (LoRa repeater still works) but serial is frozen until reboot.
+  {
+    static bool     _wifi_watchdog_armed  = false;  // armed once WiFi first connects
+    static bool     _wifi_watchdog_halted = false;  // true = serial frozen
+    static uint32_t _wifi_lost_at         = 0;      // millis() when WiFi first lost
+    static const uint32_t WIFI_GRACE_MS   = 5000;   // 5 s grace before halting
+
+    if (_wifi_watchdog_halted) {
+      // Frozen — skip all boundary work, just keep LoRa running
+      goto boundary_done;
+    }
+
+    bool wifi_now = wifi_is_connected();
+
+    // Arm the watchdog once WiFi has been up at least once
+    if (!_wifi_watchdog_armed && wifi_now) {
+      _wifi_watchdog_armed = true;
+      _wifi_lost_at = 0;
+    }
+
+    if (_wifi_watchdog_armed && !wifi_now) {
+      if (_wifi_lost_at == 0) {
+        _wifi_lost_at = millis();
+        Serial.printf("\r\n[WATCHDOG] WiFi connection LOST at %lu ms — grace period %lu ms\r\n",
+                      _wifi_lost_at, WIFI_GRACE_MS);
+        Serial.printf("[WATCHDOG] WiFi.status() = %d  RSSI = %d\r\n",
+                      (int)WiFi.status(), (int)WiFi.RSSI());
+        Serial.printf("[WATCHDOG] Free heap: %u  Min free heap: %u\r\n",
+                      ESP.getFreeHeap(), ESP.getMinFreeHeap());
+        Serial.printf("[WATCHDOG] TCP backbone connected: %s  clients: %d\r\n",
+                      (tcp_interface_ptr && tcp_interface_ptr->isConnected()) ? "yes" : "no",
+                      tcp_interface_ptr ? tcp_interface_ptr->clientCount() : 0);
+        if (local_tcp_interface_ptr) {
+          Serial.printf("[WATCHDOG] Local TCP connected: %s  clients: %d\r\n",
+                        local_tcp_interface_ptr->isConnected() ? "yes" : "no",
+                        local_tcp_interface_ptr->clientCount());
+        }
+        Serial.flush();
+      }
+      // Check if grace period expired
+      if ((millis() - _wifi_lost_at) >= WIFI_GRACE_MS) {
+        Serial.printf("\r\n[WATCHDOG] *** WiFi still down after %lu ms — HALTING SERIAL OUTPUT ***\r\n",
+                      millis() - _wifi_lost_at);
+        Serial.printf("[WATCHDOG] WiFi.status() = %d  RSSI = %d\r\n",
+                      (int)WiFi.status(), (int)WiFi.RSSI());
+        Serial.printf("[WATCHDOG] Last boundary activity: %lu ms ago\r\n",
+                      millis() - boundary_state.last_bridge_activity);
+        Serial.printf("[WATCHDOG] Packets bridged: LoRa→TCP=%lu  TCP→LoRa=%lu\r\n",
+                      boundary_state.packets_bridged_lora_to_tcp,
+                      boundary_state.packets_bridged_tcp_to_lora);
+        Serial.println("[WATCHDOG] Device still running (LoRa repeater active). Reboot to resume.");
+        Serial.flush();
+        _wifi_watchdog_halted = true;
+        goto boundary_done;
+      }
+    } else if (_wifi_watchdog_armed && wifi_now && _wifi_lost_at != 0) {
+      // WiFi came back within grace period
+      Serial.printf("[WATCHDOG] WiFi reconnected after %lu ms\r\n", millis() - _wifi_lost_at);
+      _wifi_lost_at = 0;
+    }
+  }
+
   // Boundary Mode: poll TCP interfaces for incoming data
   if (boundary_state.wifi_enabled) {
     // Start TCP interfaces if WiFi just connected and not yet started
@@ -2252,6 +2317,8 @@ void loop() {
     boundary_state.ap_tcp_connected  = (local_tcp_interface_ptr && local_tcp_interface_ptr->isConnected());
     boundary_state.wifi_connected    = wifi_is_connected();
   }
+
+boundary_done:
 #endif
 
 #endif
