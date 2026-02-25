@@ -571,6 +571,32 @@ static bool is_backbone_interface(const Interface& iface) {
 					}
 				}
 
+				// Cull the path requests table (entries older than destination timeout)
+				{
+					std::vector<Bytes> stale_path_requests;
+					for (const auto& [destination_hash, timestamp] : _path_requests) {
+						if (OS::time() > (timestamp + DESTINATION_TIMEOUT)) {
+							stale_path_requests.push_back(destination_hash);
+						}
+					}
+					for (const Bytes& destination_hash : stale_path_requests) {
+						_path_requests.erase(destination_hash);
+					}
+				}
+
+				// Cull pending local path requests for interfaces that no longer exist
+				{
+					std::vector<Bytes> stale_plpr;
+					for (const auto& [destination_hash, iface] : _pending_local_path_requests) {
+						if (_interfaces.count(iface.get_hash()) == 0) {
+							stale_plpr.push_back(destination_hash);
+						}
+					}
+					for (const Bytes& destination_hash : stale_plpr) {
+						_pending_local_path_requests.erase(destination_hash);
+					}
+				}
+
 				// Cull the tunnel table
 				count = 0;
 				std::vector<Bytes> stale_tunnels;
@@ -2144,6 +2170,7 @@ static bool is_backbone_interface(const Interface& iface) {
 							if (iter != _pending_local_path_requests.end()) {
 								//p desiring_interface = Transport.pending_local_path_requests.pop(packet.destination_hash)
 								//const Interface& desiring_interface = (*iter).second;
+								_pending_local_path_requests.erase(iter);  // CBA FIX: pop() equivalent
 								retransmit_timeout = now;
 								retries = PATHFINDER_R;
 

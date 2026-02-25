@@ -2229,19 +2229,26 @@ void loop() {
   }
 
 #ifdef BOUNDARY_MODE
-  // ── WiFi disconnect watchdog ──────────────────────────────────────────────
-  // When WiFi drops, dump diagnostic info and halt serial output so the
-  // operator can read the last log lines over USB.  The device keeps running
-  // (LoRa repeater still works) but serial is frozen until reboot.
+  // ── Heap + WiFi watchdog ───────────────────────────────────────────────────
+  // Monitor heap and WiFi health. Auto-reboot on critical conditions:
+  //  1) Internal heap drops below 20KB (WiFi needs ~16KB for RX buffers)
+  //  2) WiFi down for >15s after having been connected (unrecoverable)
   {
     static bool     _wifi_watchdog_armed  = false;  // armed once WiFi first connects
-    static bool     _wifi_watchdog_halted = false;  // true = serial frozen
     static uint32_t _wifi_lost_at         = 0;      // millis() when WiFi first lost
-    static const uint32_t WIFI_GRACE_MS   = 5000;   // 5 s grace before halting
+    static const uint32_t WIFI_GRACE_MS   = 15000;  // 15s grace before reboot
+    static const uint32_t HEAP_CRITICAL   = 20000;  // 20KB minimum internal heap
 
-    if (_wifi_watchdog_halted) {
-      // Frozen — skip all boundary work, just keep LoRa running
-      goto boundary_done;
+    // ── Heap pressure check (runs always) ─────────────────────────────────
+    uint32_t free_heap = ESP.getFreeHeap();
+    if (free_heap < HEAP_CRITICAL) {
+      Serial.printf("\r\n[WATCHDOG] CRITICAL: Free heap %u < %u — REBOOTING\r\n",
+                    free_heap, HEAP_CRITICAL);
+      Serial.printf("[WATCHDOG] Min free: %u  Max alloc: %u\r\n",
+                    ESP.getMinFreeHeap(), ESP.getMaxAllocHeap());
+      Serial.flush();
+      delay(100);
+      ESP.restart();
     }
 
     bool wifi_now = wifi_is_connected();
@@ -2255,41 +2262,28 @@ void loop() {
     if (_wifi_watchdog_armed && !wifi_now) {
       if (_wifi_lost_at == 0) {
         _wifi_lost_at = millis();
-        Serial.printf("\r\n[WATCHDOG] WiFi connection LOST at %lu ms — grace period %lu ms\r\n",
+        Serial.printf("\r\n[WATCHDOG] WiFi lost at %lu ms (grace %lu ms)\r\n",
                       _wifi_lost_at, WIFI_GRACE_MS);
-        Serial.printf("[WATCHDOG] WiFi.status() = %d  RSSI = %d\r\n",
-                      (int)WiFi.status(), (int)WiFi.RSSI());
-        Serial.printf("[WATCHDOG] Free heap: %u  Min free heap: %u\r\n",
-                      ESP.getFreeHeap(), ESP.getMinFreeHeap());
-        Serial.printf("[WATCHDOG] TCP backbone connected: %s  clients: %d\r\n",
-                      (tcp_interface_ptr && tcp_interface_ptr->isConnected()) ? "yes" : "no",
-                      tcp_interface_ptr ? tcp_interface_ptr->clientCount() : 0);
-        if (local_tcp_interface_ptr) {
-          Serial.printf("[WATCHDOG] Local TCP connected: %s  clients: %d\r\n",
-                        local_tcp_interface_ptr->isConnected() ? "yes" : "no",
-                        local_tcp_interface_ptr->clientCount());
-        }
+        Serial.printf("[WATCHDOG] WiFi.status()=%d heap=%u min_heap=%u\r\n",
+                      (int)WiFi.status(), free_heap, ESP.getMinFreeHeap());
         Serial.flush();
       }
-      // Check if grace period expired
+      // Check if grace period expired — unrecoverable, reboot
       if ((millis() - _wifi_lost_at) >= WIFI_GRACE_MS) {
-        Serial.printf("\r\n[WATCHDOG] *** WiFi still down after %lu ms — HALTING SERIAL OUTPUT ***\r\n",
+        Serial.printf("\r\n[WATCHDOG] WiFi down %lu ms — REBOOTING\r\n",
                       millis() - _wifi_lost_at);
-        Serial.printf("[WATCHDOG] WiFi.status() = %d  RSSI = %d\r\n",
-                      (int)WiFi.status(), (int)WiFi.RSSI());
-        Serial.printf("[WATCHDOG] Last boundary activity: %lu ms ago\r\n",
-                      millis() - boundary_state.last_bridge_activity);
-        Serial.printf("[WATCHDOG] Packets bridged: LoRa→TCP=%lu  TCP→LoRa=%lu\r\n",
+        Serial.printf("[WATCHDOG] WiFi.status()=%d heap=%u\r\n",
+                      (int)WiFi.status(), ESP.getFreeHeap());
+        Serial.printf("[WATCHDOG] Bridged: L→T=%lu T→L=%lu\r\n",
                       boundary_state.packets_bridged_lora_to_tcp,
                       boundary_state.packets_bridged_tcp_to_lora);
-        Serial.println("[WATCHDOG] Device still running (LoRa repeater active). Reboot to resume.");
         Serial.flush();
-        _wifi_watchdog_halted = true;
-        goto boundary_done;
+        delay(100);
+        ESP.restart();
       }
     } else if (_wifi_watchdog_armed && wifi_now && _wifi_lost_at != 0) {
-      // WiFi came back within grace period
-      Serial.printf("[WATCHDOG] WiFi reconnected after %lu ms\r\n", millis() - _wifi_lost_at);
+      // WiFi recovered within grace period
+      Serial.printf("[WATCHDOG] WiFi back after %lu ms\r\n", millis() - _wifi_lost_at);
       _wifi_lost_at = 0;
     }
   }
@@ -2318,7 +2312,6 @@ void loop() {
     boundary_state.wifi_connected    = wifi_is_connected();
   }
 
-boundary_done:
 #endif
 
 #endif
