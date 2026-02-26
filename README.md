@@ -10,11 +10,11 @@ A custom firmware for the **Heltec WiFi LoRa 32 V3** and **V4** (ESP32-S3 + SX12
   └──────────┘                │                                rmap.world)
                          LoRa Radio                                ▲
                               │            ┌──────────────┐  WiFi  │
-                       ◄── RF mesh ──────► │ RNodeTHV4    │◄─TCP──┘
+                       ◄── RF mesh ──────► │ RNodeTHV4    │ ◄─TCP──┘
                               │            │ Boundary Node│    ▲
                         Other RNodes       └──────────────┘    │
                                                            ┌───┴───┐
-                                                           │ Router │
+                                                           │ Router│
                                                            └───────┘
 ```
 
