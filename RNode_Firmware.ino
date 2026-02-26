@@ -635,7 +635,8 @@ void setup() {
       RNS::Transport::set_transmit_packet_callback(on_transmit_packet);
 
       Serial.write("Starting RNS...\r\n");
-      RNS::loglevel(RNS::LOG_TRACE);
+      RNS::loglevel(RNS::LOG_VERBOSE);
+      //RNS::loglevel(RNS::LOG_TRACE);
       //RNS::loglevel(RNS::LOG_MEM);
 
       HEAD("Registering LoRA Interface...", RNS::LOG_TRACE);
@@ -701,6 +702,9 @@ void setup() {
             0,
             "LocalTcpInterface"
         );
+        // rnsd can be quiet for long stretches — use 10 min timeout
+        // to prevent unnecessary reconnection cycles that leak lwIP memory
+        local_tcp_interface_ptr->setReadTimeout(600000);
         local_tcp_rns_interface = local_tcp_interface_ptr;
         local_tcp_rns_interface.mode(RNS::Type::Interface::MODE_ACCESS_POINT);
         RNS::Transport::register_interface(local_tcp_rns_interface);

@@ -104,6 +104,7 @@ using namespace RNS::Utilities;
 static std::set<Bytes> _boundary_local_addresses;
 // BOUNDARY MODE Whitelist 2: addresses mentioned in packets from local devices
 static std::set<Bytes> _boundary_mentioned_addresses;
+static const uint16_t _boundary_maxsize = 200;
 
 // BOUNDARY MODE: Check if an interface is the backbone
 static bool is_backbone_interface(const Interface& iface) {
@@ -255,6 +256,9 @@ static bool is_backbone_interface(const Interface& iface) {
 
 /*static*/ void Transport::jobs() {
 	//TRACE("Transport::jobs()");
+
+	// Heap telemetry: snapshot at jobs entry
+	size_t _jobs_heap_entry = OS::heap_available();
 
 	std::vector<Packet> outgoing;
 	std::set<Bytes> path_requests;
@@ -442,6 +446,15 @@ static bool is_backbone_interface(const Interface& iface) {
 				std::advance(iter, _packet_hashlist.size() - _hashlist_maxsize);
 				_packet_hashlist.erase(_packet_hashlist.begin(), iter);
 			}
+
+#ifdef BOUNDARY_MODE
+			// Cull the boundary mentioned addresses if it has reached its max size
+			if (_boundary_mentioned_addresses.size() > _boundary_maxsize) {
+				std::set<Bytes>::iterator iter = _boundary_mentioned_addresses.begin();
+				std::advance(iter, _boundary_mentioned_addresses.size() - _boundary_maxsize);
+				_boundary_mentioned_addresses.erase(_boundary_mentioned_addresses.begin(), iter);
+			}
+#endif
 
 			// Cull the path request tags list if it has reached its max size
 			if (_discovery_pr_tags.size() > _max_pr_tags) {
@@ -655,6 +668,15 @@ static bool is_backbone_interface(const Interface& iface) {
 	}
 
 	_jobs_running = false;
+
+	// Heap telemetry: snapshot at jobs exit
+	{
+		size_t _jobs_heap_exit = OS::heap_available();
+		int _jobs_delta = (int)_jobs_heap_exit - (int)_jobs_heap_entry;
+		if (_jobs_delta < -64 || _jobs_delta > 64) {
+			VERBOSEF("[HEAP-TEL] jobs: %d bytes (heap=%u)", _jobs_delta, (uint32_t)_jobs_heap_exit);
+		}
+	}
 
 	// CBA send announce retransmission packets
 	for (auto& packet : outgoing) {
@@ -1201,6 +1223,9 @@ static bool is_backbone_interface(const Interface& iface) {
 /*static*/ void Transport::inbound(const Bytes& raw, const Interface& interface /*= {Type::NONE}*/) {
 	TRACEF("Transport::inbound: received %d bytes", raw.size());
 	++_packets_received;
+
+	// Heap telemetry: snapshot at entry
+	size_t _heap_at_entry = OS::heap_available();
 	// CBA
 	if (_callbacks._receive_packet) {
 		try {
@@ -1440,7 +1465,16 @@ static bool is_backbone_interface(const Interface& iface) {
 		}
 #endif
 
-		// CBA ACCUMULATES
+		// Heap telemetry: snapshot after boundary filter
+		{
+			size_t _heap_after_boundary = OS::heap_available();
+			int _boundary_delta = (int)_heap_after_boundary - (int)_heap_at_entry;
+			if (_boundary_delta < -64) {
+				VERBOSEF("[HEAP-TEL] boundary: %d bytes (bma=%u phl=%u)", _boundary_delta, _boundary_mentioned_addresses.size(), _packet_hashlist.size());
+			}
+		}
+
+	// CBA ACCUMULATES
 		_packet_hashlist.insert(packet.packet_hash());
 		cache_packet(packet);
 		
@@ -2639,6 +2673,21 @@ static bool is_backbone_interface(const Interface& iface) {
 					cull_receipts.remove(receipt);
 				}
 			}
+		}
+	}
+
+	// Heap telemetry: snapshot at exit
+	{
+		size_t _heap_at_exit = OS::heap_available();
+		int _inbound_delta = (int)_heap_at_exit - (int)_heap_at_entry;
+		// Log every 100th packet or when delta exceeds threshold
+		static uint32_t _tel_pkt_count = 0;
+		++_tel_pkt_count;
+		if (_inbound_delta < -64 || (_tel_pkt_count % 100 == 0)) {
+			VERBOSEF("[HEAP-TEL] inbound: %d bytes (heap=%u pin=%u bma=%u phl=%u lt=%u revr=%u)",
+				_inbound_delta, (uint32_t)_heap_at_exit, _packets_received,
+				_boundary_mentioned_addresses.size(), _packet_hashlist.size(),
+				_link_table.size(), _reverse_table.size());
 		}
 	}
 
@@ -4249,6 +4298,7 @@ TRACE("Transport::write_path_table: buffer size " + std::to_string(Persistence::
 		interface_announces += interface.announce_queue().size();
 	}
 	VERBOSEF("phl: %u rcp: %u lt: %u pl: %u al: %u tun: %u", _packet_hashlist.size(), _receipts.size(), _link_table.size(), _pending_links.size(), _active_links.size(), _tunnels.size());
+	VERBOSEF("bla: %u bma: %u", _boundary_local_addresses.size(), _boundary_mentioned_addresses.size());
 	VERBOSEF("pin: %u pout: %u padd: %u dpr: %u ikd: %u ia: %u\r\n", _packets_received, _packets_sent, _destinations_added, destination_path_responses, Identity::_known_destinations.size(), interface_announces);
 
 	_last_memory = memory;

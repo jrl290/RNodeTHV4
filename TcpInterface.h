@@ -17,6 +17,7 @@
 #ifdef BOUNDARY_MODE
 
 #include <WiFi.h>
+#include <lwip/sockets.h>   // SO_LINGER — force RST to free lwIP PCBs immediately
 #include <Interface.h>
 #include <Transport.h>
 #include <Bytes.h>
@@ -75,6 +76,7 @@ public:
           _last_reconnect(0),
           _last_keepalive(0),
           _reconnect_interval(TCP_IF_RECONNECT_MIN),
+          _read_timeout(TCP_IF_READ_TIMEOUT),
           _resolved_ip((uint32_t)0),
           _consecutive_failures(0),
           _started(false)
@@ -128,7 +130,16 @@ public:
     void stop() {
         for (int i = 0; i < TCP_IF_MAX_CLIENTS; i++) {
             if (_clients[i].active) {
+                // Force RST to free lwIP PCBs immediately (no TIME_WAIT)
+                int fd = _clients[i].client.fd();
+                if (fd >= 0) {
+                    struct linger lin;
+                    lin.l_onoff = 1;
+                    lin.l_linger = 0;
+                    setsockopt(fd, SOL_SOCKET, SO_LINGER, &lin, sizeof(lin));
+                }
                 _clients[i].client.stop();
+                _clients[i].client = WiFiClient();
                 _clients[i].active = false;
             }
         }
@@ -185,25 +196,15 @@ public:
             if (!_clients[i].active) continue;
 
             if (!_clients[i].client.connected()) {
-                Serial.printf("[TcpIF] Client %d disconnected\r\n", i);
-                _clients[i].client.stop();
-                _clients[i].active = false;
-                _clients[i].in_frame = false;
-                _clients[i].escape = false;
-                _clients[i].rxlen = 0;
-                _num_clients--;
+                _cleanup_client(i, "disconnected");
                 continue;
             }
 
-            // Check read timeout
-            if (_clients[i].last_activity > 0 &&
-                (millis() - _clients[i].last_activity) > TCP_IF_READ_TIMEOUT) {
-                Serial.printf("[TcpIF] Client %d read timeout\r\n", i);
-                _clients[i].client.stop();
-                _clients[i].active = false;
-                _clients[i].in_frame = false;
-                _clients[i].rxlen = 0;
-                _num_clients--;
+            // Check read timeout (0 = disabled)
+            if (_read_timeout > 0 &&
+                _clients[i].last_activity > 0 &&
+                (millis() - _clients[i].last_activity) > _read_timeout) {
+                _cleanup_client(i, "read timeout");
                 continue;
             }
 
@@ -220,6 +221,7 @@ public:
     int  clientCount() const { return _num_clients; }
     bool isStarted()   const { return _started; }
     bool isConnected() const { return _num_clients > 0; }
+    void setReadTimeout(uint32_t timeout_ms) { _read_timeout = timeout_ms; }
 
 protected:
     // ─── RNS InterfaceImpl: outgoing packet from RNS Transport ───────────────
@@ -248,12 +250,7 @@ protected:
             if (_clients[i].active && _clients[i].client.connected()) {
                 size_t written = _clients[i].client.write(frame_buf, flen);
                 if (written == 0) {
-                    Serial.printf("[TcpIF] Write failed on client %d, dropping\r\n", i);
-                    _clients[i].client.stop();
-                    _clients[i].active = false;
-                    _clients[i].in_frame = false;
-                    _clients[i].rxlen = 0;
-                    _num_clients--;
+                    _cleanup_client(i, "write failed");
                 }
             }
         }
@@ -270,6 +267,38 @@ protected:
     }
 
 private:
+    // ─── Cleanup a client slot, freeing all lwIP resources ───────────────────
+    void _cleanup_client(int idx, const char* reason) {
+        TcpClient& c = _clients[idx];
+        if (!c.active) return;
+
+        uint32_t heap_before = ESP.getFreeHeap();
+
+        // Set SO_LINGER with timeout 0: forces RST instead of FIN,
+        // which skips TIME_WAIT and immediately frees the lwIP PCB
+        // and all associated TCP send/receive buffers (~2-4 KB each).
+        int fd = c.client.fd();
+        if (fd >= 0) {
+            struct linger lin;
+            lin.l_onoff = 1;
+            lin.l_linger = 0;
+            setsockopt(fd, SOL_SOCKET, SO_LINGER, &lin, sizeof(lin));
+        }
+
+        c.client.stop();
+        c.client = WiFiClient();  // Release any residual shared_ptr state
+        c.active = false;
+        c.in_frame = false;
+        c.escape = false;
+        c.rxlen = 0;
+        _num_clients--;
+
+        uint32_t heap_after = ESP.getFreeHeap();
+        Serial.printf("[TcpIF] Client %d %s (heap: %u -> %u, delta: %+d)\r\n",
+                      idx, reason, heap_before, heap_after,
+                      (int)(heap_after - heap_before));
+    }
+
     // ─── HDLC byte-level deframing ──────────────────────────────────────────
     void _hdlc_deframe(int idx, uint8_t byte) {
         TcpClient& c = _clients[idx];
@@ -306,6 +335,18 @@ private:
         // Find a free slot
         for (int i = 0; i < TCP_IF_MAX_CLIENTS; i++) {
             if (!_clients[i].active) {
+                // Defensive: force-release any residual lwIP resources in this slot
+                // before assigning the new client (prevents PCB/buffer leaks)
+                int fd = _clients[i].client.fd();
+                if (fd >= 0) {
+                    struct linger lin;
+                    lin.l_onoff = 1;
+                    lin.l_linger = 0;
+                    setsockopt(fd, SOL_SOCKET, SO_LINGER, &lin, sizeof(lin));
+                    _clients[i].client.stop();
+                }
+                _clients[i].client = WiFiClient();  // Reset to clean state
+
                 _clients[i].client = newClient;
                 _clients[i].client.setNoDelay(true);
                 _clients[i].client.setTimeout(TCP_IF_WRITE_TIMEOUT / 1000);
@@ -399,6 +440,7 @@ private:
     uint32_t    _last_reconnect;
     uint32_t    _last_keepalive;
     uint32_t    _reconnect_interval;
+    uint32_t    _read_timeout;
     IPAddress   _resolved_ip;
     uint16_t    _consecutive_failures;
     bool        _started;

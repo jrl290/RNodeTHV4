@@ -2,15 +2,18 @@
 """
 RNodeTHV4 Flash Utility
 
-Flash the RNodeTHV4 boundary node firmware to a Heltec WiFi LoRa 32 V4.
+Flash the RNodeTHV4 boundary node firmware to a Heltec WiFi LoRa 32 V3 or V4.
 No PlatformIO required — just Python 3 and a USB cable.
 
 Default mode flashes only the app partition (0x10000), preserving
 bootloader, partition table, NVS, and EEPROM settings.
 
 Usage:
-    # Update firmware (preserves WiFi/boundary settings)
+    # Update firmware — V4 (default)
     python flash.py
+
+    # Update firmware — V3
+    python flash.py --board v3
 
     # Full flash with merged binary (overwrites everything)
     python flash.py --full
@@ -43,9 +46,6 @@ import time
 CHIP            = "esp32s3"
 FLASH_MODE      = "qio"
 FLASH_FREQ      = "80m"
-FLASH_SIZE      = "16MB"
-BAUD_RATE       = "921600"
-MERGED_FILENAME = "rnodethv4_firmware.bin"
 GITHUB_REPO     = "jrl290/RNodeTHV4"
 
 # Flash addresses for ESP32-S3 Arduino framework
@@ -54,11 +54,61 @@ PARTITIONS_ADDR = 0x8000
 BOOT_APP0_ADDR  = 0xe000
 APP_ADDR        = 0x10000
 
-# PlatformIO build output paths (relative to project root)
-BUILD_DIR       = ".pio/build/heltec_V4_boundary"
-BOOTLOADER_BIN  = os.path.join(BUILD_DIR, "bootloader.bin")
-PARTITIONS_BIN  = os.path.join(BUILD_DIR, "partitions.bin")
-FIRMWARE_BIN    = os.path.join(BUILD_DIR, "rnode_firmware_heltec32v4_boundary.bin")
+# ── Board profiles ─────────────────────────────────────────────────────────────
+# Each board defines its PIO env, flash size, baud rate, firmware binary name,
+# and merged binary name.
+
+BOARD_PROFILES = {
+    "v4": {
+        "name":            "Heltec WiFi LoRa 32 V4",
+        "pio_env":         "heltec_V4_boundary",
+        "build_dir":       ".pio/build/heltec_V4_boundary",
+        "firmware_bin":    "rnode_firmware_heltec32v4_boundary.bin",
+        "merged_filename": "rnodethv4_firmware.bin",
+        "flash_size":      "16MB",
+        "baud_rate":       "921600",
+    },
+    "v3": {
+        "name":            "Heltec WiFi LoRa 32 V3",
+        "pio_env":         "heltec_V3_boundary",
+        "build_dir":       ".pio/build/heltec_V3_boundary",
+        "firmware_bin":    "rnode_firmware_heltec32v3.bin",
+        "merged_filename": "rnodethv3_firmware.bin",
+        "flash_size":      "8MB",
+        "baud_rate":       "460800",
+    },
+}
+DEFAULT_BOARD = "v4"
+
+# Active board profile (set in main() from --board arg)
+_board = None
+
+def board_profile():
+    return BOARD_PROFILES[_board or DEFAULT_BOARD]
+
+def BUILD_DIR():
+    return board_profile()["build_dir"]
+
+def BOOTLOADER_BIN():
+    return os.path.join(BUILD_DIR(), "bootloader.bin")
+
+def PARTITIONS_BIN():
+    return os.path.join(BUILD_DIR(), "partitions.bin")
+
+def FIRMWARE_BIN():
+    return os.path.join(BUILD_DIR(), board_profile()["firmware_bin"])
+
+def FLASH_SIZE():
+    return board_profile()["flash_size"]
+
+def BAUD_RATE():
+    return board_profile()["baud_rate"]
+
+def MERGED_FILENAME():
+    return board_profile()["merged_filename"]
+
+def PIO_ENV():
+    return board_profile()["pio_env"]
 
 # ESP32 partition table magic bytes (first two bytes of a partition table entry)
 PARTITION_TABLE_MAGIC = b'\xaa\x50'
@@ -94,6 +144,16 @@ def _find_in_platformio_or_release(build_path, release_name):
 
     return None
 
+# Forward-compatible aliases (these are now functions, not constants)
+def _bootloader_bin():
+    return BOOTLOADER_BIN()
+
+def _partitions_bin():
+    return PARTITIONS_BIN()
+
+def _firmware_bin():
+    return FIRMWARE_BIN()
+
 
 def find_boot_app0():
     """Find boot_app0.bin from PlatformIO framework packages.
@@ -126,15 +186,76 @@ def find_boot_app0():
 
 def find_bootloader():
     """Find bootloader.bin from PlatformIO build output or Release/ bundle."""
-    return _find_in_platformio_or_release(BOOTLOADER_BIN, "bootloader.bin")
+    return _find_in_platformio_or_release(BOOTLOADER_BIN(), "bootloader.bin")
 
 
 def find_partitions():
     """Find partitions.bin from PlatformIO build output or Release/ bundle."""
-    return _find_in_platformio_or_release(PARTITIONS_BIN, "partitions.bin")
+    return _find_in_platformio_or_release(PARTITIONS_BIN(), "partitions.bin")
 
 
 BOOT_APP0_BIN = find_boot_app0()
+
+# ── Board auto-detection ───────────────────────────────────────────────────────
+
+# Map detected flash sizes to board keys
+_FLASH_SIZE_TO_BOARD = {
+    "16MB": "v4",
+    "8MB":  "v3",
+}
+
+def detect_board(port, esptool_cmd):
+    """Auto-detect which Heltec board is connected by querying flash size.
+
+    Runs ``esptool.py flash_id`` and parses the output for:
+      - Detected flash size (16MB → V4, 8MB → V3)
+      - Chip type (ESP32-S3 expected)
+      - Features (PSRAM size, WiFi, BLE)
+
+    Returns a tuple (board_key, info_dict) on success, or (None, reason) on
+    failure.  ``board_key`` is "v3" or "v4".
+    """
+    cmd = esptool_cmd + ["--port", port, "flash_id"]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+    except subprocess.TimeoutExpired:
+        return None, "esptool timed out (device not responding?)"
+    except Exception as e:
+        return None, str(e)
+
+    output = result.stdout + result.stderr
+    if result.returncode != 0:
+        return None, f"esptool flash_id failed:\n{output.strip()}"
+
+    # Parse key fields
+    info = {}
+    for line in output.splitlines():
+        line = line.strip()
+        if line.startswith("Chip is "):
+            info["chip"] = line[len("Chip is "):]
+        elif line.startswith("Features:"):
+            info["features"] = line[len("Features:"):].strip()
+        elif line.startswith("Detected flash size:"):
+            info["flash_size"] = line.split(":")[-1].strip()
+        elif line.startswith("MAC:"):
+            info["mac"] = line.split(":")[-5:]  # last 5 colon-groups
+            info["mac"] = line[len("MAC:"):].strip()
+        elif line.startswith("Crystal is"):
+            info["crystal"] = line[len("Crystal is"):].strip()
+
+    flash_size = info.get("flash_size")
+    if not flash_size:
+        return None, f"Could not parse flash size from esptool output:\n{output.strip()}"
+
+    board_key = _FLASH_SIZE_TO_BOARD.get(flash_size)
+    if not board_key:
+        return None, (
+            f"Unknown flash size '{flash_size}' — expected 16MB (V4) or 8MB (V3).\n"
+            f"Use --board v3 or --board v4 to specify manually."
+        )
+
+    return board_key, info
+
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -259,16 +380,16 @@ def download_firmware(dest_path):
     # Find the merged firmware asset
     asset_url = None
     for asset in release.get("assets", []):
-        if asset["name"] == MERGED_FILENAME:
+        if asset["name"] == MERGED_FILENAME():
             asset_url = asset["browser_download_url"]
             break
 
     if not asset_url:
-        print(f"Error: '{MERGED_FILENAME}' not found in latest release ({release.get('tag_name', '?')}).")
+        print(f"Error: '{MERGED_FILENAME()}' not found in latest release ({release.get('tag_name', '?')}).")
         print("Available assets:", [a["name"] for a in release.get("assets", [])])
         return False
 
-    print(f"Downloading {release['tag_name']} / {MERGED_FILENAME}...")
+    print(f"Downloading {release['tag_name']} / {MERGED_FILENAME()}...")
     try:
         urlretrieve(asset_url, dest_path)
     except Exception as e:
@@ -293,7 +414,7 @@ def _do_merge(output_path, esptool_cmd, bootloader, partitions, boot_app0, firmw
         "merge_bin",
         "--flash_mode", FLASH_MODE,
         "--flash_freq", FLASH_FREQ,
-        "--flash_size", FLASH_SIZE,
+        "--flash_size", FLASH_SIZE(),
         "-o", output_path,
         f"0x{BOOTLOADER_ADDR:x}", bootloader,
         f"0x{PARTITIONS_ADDR:x}", partitions,
@@ -321,11 +442,11 @@ def merge_firmware(output_path, esptool_cmd):
     bootloader = find_bootloader()
     partitions = find_partitions()
     boot_app0  = BOOT_APP0_BIN
-    firmware   = FIRMWARE_BIN
+    firmware   = FIRMWARE_BIN()
 
     missing = []
-    if not bootloader:         missing.append(("bootloader", BOOTLOADER_BIN))
-    if not partitions:         missing.append(("partitions", PARTITIONS_BIN))
+    if not bootloader:         missing.append(("bootloader", BOOTLOADER_BIN()))
+    if not partitions:         missing.append(("partitions", PARTITIONS_BIN()))
     if not boot_app0:          missing.append(("boot_app0",  "(not found)"))
     if not os.path.isfile(firmware):
         missing.append(("firmware", firmware))
@@ -333,7 +454,7 @@ def merge_firmware(output_path, esptool_cmd):
     if missing:
         for name, path in missing:
             print(f"Error: {name} not found: {path}")
-        print("Run 'pio run -e heltec_V4_boundary' to build first.")
+        print(f"Run 'pio run -e {PIO_ENV()}' to build first.")
         return False
 
     return _do_merge(output_path, esptool_cmd, bootloader, partitions, boot_app0, firmware)
@@ -360,7 +481,7 @@ def auto_merge_app_binary(app_binary_path, esptool_cmd):
     if missing:
         print(f"Cannot auto-merge: missing {', '.join(missing)}")
         print("Place them in the Release/ folder alongside flash.py, or")
-        print("build with PlatformIO: pio run -e heltec_V4_boundary")
+        print(f"build with PlatformIO: pio run -e {PIO_ENV()}")
         return None
 
     # Create merged binary next to the app binary
@@ -406,10 +527,13 @@ def reset_to_bootloader(port):
     return True
 
 
-def flash_firmware(firmware_path, port, esptool_cmd, baud=BAUD_RATE):
+def flash_firmware(firmware_path, port, esptool_cmd, baud=None):
     """Flash firmware to the device."""
+    if baud is None:
+        baud = BAUD_RATE()
+    flash_size = FLASH_SIZE()
     print(f"\nFlashing {firmware_path} to {port}...")
-    print(f"  Chip: {CHIP}  Baud: {baud}  Flash: {FLASH_SIZE}\n")
+    print(f"  Chip: {CHIP}  Baud: {baud}  Flash: {flash_size}\n")
 
     # Determine if this is a merged binary (flash at 0x0) or app-only (flash at 0x10000)
     is_merged = is_merged_binary(firmware_path)
@@ -431,7 +555,7 @@ def flash_firmware(firmware_path, port, esptool_cmd, baud=BAUD_RATE):
         "-z",
         "--flash_mode", FLASH_MODE,
         "--flash_freq", FLASH_FREQ,
-        "--flash_size", FLASH_SIZE,
+        "--flash_size", flash_size,
         flash_addr, firmware_path,
     ]
 
@@ -443,12 +567,14 @@ def flash_firmware(firmware_path, port, esptool_cmd, baud=BAUD_RATE):
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
+    global _board
     parser = argparse.ArgumentParser(
-        description="RNodeTHV4 Flash Utility — flash boundary node firmware to Heltec V4",
+        description="RNodeTHV4 Flash Utility — flash boundary node firmware to Heltec V3/V4",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python flash.py                         # App-only update (preserves settings)
+  python flash.py                         # App-only update, V4 (default)
+  python flash.py --board v3              # App-only update, V3
   python flash.py --full                  # Full flash with merged binary
   python flash.py --download              # Download latest release and flash
   python flash.py --file firmware.bin     # Flash a specific file
@@ -457,9 +583,12 @@ Examples:
   python flash.py --erase --full          # Erase flash, then full flash
         """,
     )
+    parser.add_argument("--board", choices=["v3", "v4"], default=None,
+                        help="Target board: v3 (Heltec V3) or v4 (Heltec V4). "
+                             "Auto-detected from connected device if omitted.")
     parser.add_argument("--file", "-f", help="Path to firmware binary to flash")
     parser.add_argument("--port", "-p", help="Serial port (auto-detected if omitted)")
-    parser.add_argument("--baud", "-b", default=BAUD_RATE, help=f"Baud rate (default: {BAUD_RATE})")
+    parser.add_argument("--baud", "-b", default=None, help="Baud rate (board-specific default)")
     parser.add_argument("--download", "-d", action="store_true",
                         help="Download latest firmware from GitHub Releases")
     parser.add_argument("--merge-only", action="store_true",
@@ -470,20 +599,58 @@ Examples:
                         help="Erase entire flash before writing (implies --full)")
 
     args = parser.parse_args()
-    baud = args.baud
 
-    print("╔══════════════════════════════════════════╗")
-    print("║       RNodeTHV4 Flash Utility            ║")
-    print("║  Heltec WiFi LoRa 32 V4 Boundary Node   ║")
-    print("╚══════════════════════════════════════════╝")
-    print()
-
-    # Find esptool
+    # Find esptool early — needed for both auto-detect and flashing
     esptool_cmd = find_esptool()
     if not esptool_cmd:
         print("Error: esptool not found!")
         print("Install it with:  pip install esptool")
         sys.exit(1)
+
+    # ── Board detection ─────────────────────────────────────────────────
+    detected_info = None
+    _early_port = None
+
+    if args.board:
+        # Explicit board — no detection needed
+        _board = args.board
+    elif args.merge_only:
+        # No device needed for merge — fall back to default
+        _board = DEFAULT_BOARD
+        print(f"(No --board specified; defaulting to {DEFAULT_BOARD} for merge)")
+    else:
+        # Auto-detect from connected device
+        _early_port = args.port or find_serial_port()
+        if not _early_port:
+            print("No serial port detected and no --board specified.")
+            print(f"Defaulting to {DEFAULT_BOARD}. Specify with --board v3 or --board v4.")
+            _board = DEFAULT_BOARD
+        else:
+            print(f"Detecting board on {_early_port}...")
+            board_key, info = detect_board(_early_port, esptool_cmd)
+            if board_key:
+                _board = board_key
+                detected_info = info
+                print(f"  Chip:       {info.get('chip', '?')}")
+                print(f"  Flash:      {info.get('flash_size', '?')}")
+                print(f"  Features:   {info.get('features', '?')}")
+                print(f"  MAC:        {info.get('mac', '?')}")
+                print(f"  → Detected: {BOARD_PROFILES[board_key]['name']}")
+            else:
+                reason = info  # info is the error reason when board_key is None
+                print(f"  Auto-detect failed: {reason}")
+                print(f"  Defaulting to {DEFAULT_BOARD}. Specify with --board v3 or --board v4.")
+                _board = DEFAULT_BOARD
+
+    baud = args.baud or BAUD_RATE()
+    bp = board_profile()
+
+    print()
+    print("╔══════════════════════════════════════════╗")
+    print("║       RNodeTHV4 Flash Utility            ║")
+    print(f"║  {bp['name']:^40s}  ║")
+    print("╚══════════════════════════════════════════╝")
+    print()
     print(f"Using esptool: {' '.join(esptool_cmd)}")
 
     # --erase implies --full (after erase, device needs bootloader + partitions)
@@ -492,6 +659,9 @@ Examples:
 
     # Determine firmware file
     firmware_path = None
+    merged_fn = MERGED_FILENAME()
+    firmware_bin = FIRMWARE_BIN()
+    pio_env = PIO_ENV()
 
     if args.file:
         firmware_path = args.file
@@ -500,69 +670,69 @@ Examples:
             sys.exit(1)
 
     elif args.download:
-        firmware_path = MERGED_FILENAME
+        firmware_path = merged_fn
         if not download_firmware(firmware_path):
             sys.exit(1)
 
     elif args.merge_only:
-        if merge_firmware(MERGED_FILENAME, esptool_cmd):
-            print(f"\nDone! Flash with:  python flash.py --file {MERGED_FILENAME}")
+        if merge_firmware(merged_fn, esptool_cmd):
+            print(f"\nDone! Flash with:  python flash.py --board {_board} --file {merged_fn}")
         else:
             sys.exit(1)
         return
 
     elif args.full:
         # Full flash: use or create merged binary
-        if os.path.isfile(FIRMWARE_BIN):
+        if os.path.isfile(firmware_bin):
             # Build exists — (re-)merge
-            if os.path.isfile(MERGED_FILENAME):
-                build_time = os.path.getmtime(FIRMWARE_BIN)
-                merge_time = os.path.getmtime(MERGED_FILENAME)
+            if os.path.isfile(merged_fn):
+                build_time = os.path.getmtime(firmware_bin)
+                merge_time = os.path.getmtime(merged_fn)
                 if build_time > merge_time:
                     print("Build output is newer than merged binary, re-merging...")
-                    if not merge_firmware(MERGED_FILENAME, esptool_cmd):
+                    if not merge_firmware(merged_fn, esptool_cmd):
                         sys.exit(1)
             else:
                 print("Creating merged binary from PlatformIO build output...")
-                if not merge_firmware(MERGED_FILENAME, esptool_cmd):
+                if not merge_firmware(merged_fn, esptool_cmd):
                     sys.exit(1)
-            firmware_path = MERGED_FILENAME
-        elif os.path.isfile(MERGED_FILENAME):
-            firmware_path = MERGED_FILENAME
+            firmware_path = merged_fn
+        elif os.path.isfile(merged_fn):
+            firmware_path = merged_fn
         else:
             print("No firmware found for full flash!")
             print()
             print("Options:")
-            print("  1. Build with PlatformIO first:  pio run -e heltec_V4_boundary")
-            print("  2. Download from GitHub:         python flash.py --download")
-            print("  3. Specify a file:               python flash.py --file <path>")
+            print(f"  1. Build with PlatformIO first:  pio run -e {pio_env}")
+            print(f"  2. Download from GitHub:         python flash.py --board {_board} --download")
+            print(f"  3. Specify a file:               python flash.py --board {_board} --file <path>")
             sys.exit(1)
 
     else:
         # Default: app-only flash (preserves settings)
-        if os.path.isfile(FIRMWARE_BIN):
-            firmware_path = FIRMWARE_BIN
+        if os.path.isfile(firmware_bin):
+            firmware_path = firmware_bin
             print(f"App-only update (preserves WiFi/boundary settings)")
             print(f"  Use --full for a complete flash, or --erase for recovery.")
-        elif os.path.isfile(MERGED_FILENAME):
-            firmware_path = MERGED_FILENAME
-            print(f"No build output found, using merged binary: {MERGED_FILENAME}")
+        elif os.path.isfile(merged_fn):
+            firmware_path = merged_fn
+            print(f"No build output found, using merged binary: {merged_fn}")
             print(f"  Note: merged binary will overwrite bootloader + partitions.")
         else:
             print("No firmware found!")
             print()
             print("Options:")
-            print("  1. Build with PlatformIO first:  pio run -e heltec_V4_boundary")
-            print("  2. Download from GitHub:         python flash.py --download")
-            print("  3. Specify a file:               python flash.py --file <path>")
+            print(f"  1. Build with PlatformIO first:  pio run -e {pio_env}")
+            print(f"  2. Download from GitHub:         python flash.py --board {_board} --download")
+            print(f"  3. Specify a file:               python flash.py --board {_board} --file <path>")
             sys.exit(1)
 
-    # Flash
-    port = args.port or find_serial_port()
+    # Flash — reuse early-detected port if available
+    port = args.port or _early_port or find_serial_port()
     if not port:
         print("\nError: No serial port detected!")
-        print("Connect your Heltec V4 via USB and try again,")
-        print("or specify manually: python flash.py --port /dev/ttyACM0")
+        print(f"Connect your {bp['name']} via USB and try again,")
+        print(f"or specify manually: python flash.py --board {_board} --port /dev/ttyACM0")
         sys.exit(1)
 
     print(f"\nSerial port: {port}")

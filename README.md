@@ -1,6 +1,6 @@
-# RNodeTHV4 — Reticulum Boundary Node for Heltec WiFi LoRa 32 V4
+# RNodeTHV4 — Reticulum Boundary Node for Heltec WiFi LoRa 32 V3 / V4
 
-A custom firmware for the **Heltec WiFi LoRa 32 V4** (ESP32-S3 + SX1262) that operates as a **Boundary Node** — bridging a local LoRa radio network with a remote TCP/IP backbone (such as [rmap.world](https://rmap.world)) over WiFi.
+A custom firmware for the **Heltec WiFi LoRa 32 V3** and **V4** (ESP32-S3 + SX1262) that operates as a **Boundary Node** — bridging a local LoRa radio network with a remote TCP/IP backbone (such as [rmap.world](https://rmap.world)) over WiFi.
 
 ```
   Android / Sideband                                             Remote
@@ -28,18 +28,22 @@ Built on [microReticulum](https://github.com/attermann/microReticulum) (a C++ po
 - **Optional local TCP server** — serve local devices on your WiFi in addition to the backbone connection
 - **Automatic reconnection** — WiFi and TCP connections recover from drops with exponential backoff
 - **ESP32 memory-optimized** — table sizes, timeouts, and caching tuned for the constrained MCU environment
+- **Dual board support** — supports both Heltec V3 (8MB flash, 8MB PSRAM) and V4 (16MB flash, 2MB PSRAM) with automatic board detection
 
 ## Hardware
 
-The **Heltec WiFi LoRa 32 V4** was chosen because it ships standard with **2 MB PSRAM** and **16 MB flash** — enough headroom for the microReticulum transport tables, packet caching to flash storage, and the web-based configuration portal. Many other LoRa dev boards come with only 4–8 MB flash and no PSRAM, which would require significant compromises to the boundary node's caching and routing capabilities.
+Both the **Heltec WiFi LoRa 32 V3** and **V4** are supported. These boards were chosen because they ship with PSRAM and ample flash — enough headroom for the microReticulum transport tables, packet caching to flash storage, and the web-based configuration portal. Many other LoRa dev boards come with only 4 MB flash and no PSRAM, which would require significant compromises to the boundary node's caching and routing capabilities.
 
-| Component | Spec |
-|-----------|------|
-| **Board** | Heltec WiFi LoRa 32 V4 |
-| **MCU** | ESP32-S3, 2MB PSRAM, 16MB Flash |
-| **Radio** | SX1262 + GC1109 PA (up to 28 dBm) |
-| **Display** | SSD1306 OLED 128×64 |
-| **WiFi** | 2.4 GHz 802.11 b/g/n |
+| Component | Heltec V3 | Heltec V4 |
+|-----------|-----------|----------|
+| **MCU** | ESP32-S3 | ESP32-S3 |
+| **Flash** | 8 MB | 16 MB |
+| **PSRAM** | 8 MB (QSPI) | 2 MB (QSPI) |
+| **Radio** | SX1262 | SX1262 + GC1109 PA |
+| **TX Power** | Up to 22 dBm | Up to 28 dBm |
+| **Display** | SSD1306 OLED 128×64 | SSD1306 OLED 128×64 |
+| **WiFi** | 2.4 GHz 802.11 b/g/n | 2.4 GHz 802.11 b/g/n |
+| **USB** | Native USB CDC | Native USB CDC |
 
 ## Quick Start
 
@@ -56,13 +60,18 @@ git clone https://github.com/jrl290/RNodeTHV4.git
 cd RNodeTHV4
 
 # Download latest firmware from GitHub Releases and flash
+# (auto-detects V3 vs V4 from flash size)
 python flash.py --download
+
+# Or specify board explicitly
+python flash.py --download --board v3
+python flash.py --download --board v4
 
 # Or flash a local binary
 python flash.py --file rnodethv4_firmware.bin
 ```
 
-The flash utility will list all available serial ports and prompt you to choose one. If no ports are detected, you may need to hold the **BOOT** button while pressing **RESET** to enter download mode.
+The flash utility auto-detects whether a V3 or V4 is connected by querying the flash size (8MB = V3, 16MB = V4). You can override with `--board v3` or `--board v4`. It will list all available serial ports and prompt you to choose one. If no ports are detected, you may need to hold the **BOOT** button while pressing **RESET** to enter download mode.
 
 ### Option B: Build from Source (PlatformIO)
 
@@ -74,15 +83,18 @@ For development or customization:
 git clone https://github.com/jrl290/RNodeTHV4.git
 cd RNodeTHV4
 
-# Build
+# Build for V4
 pio run -e heltec_V4_boundary
+
+# Build for V3
+pio run -e heltec_V3_boundary
 
 # Flash (via PlatformIO)
 pio run -e heltec_V4_boundary -t upload
 
 # Or create a merged binary and flash with the utility
-python flash.py --merge-only    # creates rnodethv4_firmware.bin
-python flash.py                 # flash it
+python flash.py --merge-only    # creates merged firmware bin
+python flash.py                 # flash it (auto-detects board)
 
 # Monitor serial output (optional)
 pio device monitor -e heltec_V4_boundary
@@ -326,8 +338,8 @@ Set the boundary node's **Local TCP Server** to **Enabled** (port 4242).
 | `TcpInterface.h` | TCP interface for both backbone and local server (implements `RNS::InterfaceImpl`) with HDLC framing, unique naming, and 10 Mbps bitrate |
 | `Display.h` | OLED display layout — boundary-specific status page |
 | `flash.py` | Flash utility — list serial ports, download from GitHub, merge & flash firmware |
-| `Boards.h` | Board variant definition for `heltec32v4_boundary` |
-| `platformio.ini` | Build targets: `heltec_V4_boundary` and `heltec_V4_boundary-local` |
+| `Boards.h` | Board variant definitions for V3 and V4 |
+| `platformio.ini` | Build targets: `heltec_V3_boundary`, `heltec_V4_boundary`, and `heltec_V4_boundary-local` |
 
 ### Library Patches
 
@@ -340,12 +352,12 @@ The firmware depends on [microReticulum](https://github.com/attermann/microRetic
 | `Identity.cpp` | `_known_destinations_maxsize` = 24, `cull_known_destinations()` |
 | `Type.h` | `MODE_BOUNDARY` = 0x20, reduced `MAX_QUEUED_ANNOUNCES`, `MAX_RECEIPTS`, shorter timeouts |
 
-### Memory Usage (typical)
+### Memory Usage (typical, V4)
 
 | Resource | Used | Available |
-|----------|------|-----------|
+|----------|------|----------|
 | RAM | ~21.7% | 320 KB |
-| Flash | ~18.1% | 16 MB |
+| Flash | ~18.4% | 16 MB |
 | PSRAM | Dynamic | 2 MB |
 
 ## License
