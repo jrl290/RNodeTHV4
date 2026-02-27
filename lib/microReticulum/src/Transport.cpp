@@ -342,6 +342,7 @@ static bool is_backbone_interface(const Interface& iface) {
 
 			// Process announces needing retransmission
 			if (OS::time() > (_announces_last_checked + _announces_check_interval)) {
+				DEBUG("DIAG: ANNOUNCE-TBL size=" + std::to_string(_announce_table.size()));
 				//p for destination_hash in Transport.announce_table:
 				for (auto& [destination_hash, announce_entry] : _announce_table) {
 				//for (auto& pair : _announce_table) {
@@ -349,6 +350,7 @@ static bool is_backbone_interface(const Interface& iface) {
 				//	auto& announce_entry = pair.second;
 //TRACE("[0] announce entry data size: " + std::to_string(announce_entry._packet.data().size()));
 					//p announce_entry = Transport.announce_table[destination_hash]
+					DEBUG("DIAG: ANNOUNCE-ENTRY dest=" + destination_hash.toHex().substr(0,8) + " retries=" + std::to_string(announce_entry._retries) + " block=" + std::to_string(announce_entry._block_rebroadcasts) + " timeout_in=" + std::to_string(announce_entry._retransmit_timeout - OS::time()));
 					if (announce_entry._retries > 0 && announce_entry._retries >= Type::Transport::LOCAL_REBROADCASTS_MAX) {
 						TRACE("Completed announce processing for " + destination_hash.toHex() + ", local rebroadcast limit reached");
 						// CBA OK to modify collection here since we're immediately exiting iteration
@@ -356,6 +358,7 @@ static bool is_backbone_interface(const Interface& iface) {
 						break;
 					}
 					else if (announce_entry._retries > Type::Transport::PATHFINDER_R) {
+						DEBUG("DIAG: ANNOUNCE-CULL dest=" + destination_hash.toHex().substr(0,8) + " retries=" + std::to_string(announce_entry._retries) + " reason=retry_limit");
 						TRACE("Completed announce processing for " + destination_hash.toHex() + ", retry limit reached");
 						// CBA OK to modify collection here since we're immediately exiting iteration
 						_announce_table.erase(destination_hash);
@@ -403,6 +406,7 @@ static bool is_backbone_interface(const Interface& iface) {
 							new_packet.hops(announce_entry._hops);
 							if (announce_entry._block_rebroadcasts) {
 								DEBUG("Rebroadcasting announce as path response for " + announce_destination.hash().toHex() + " with hop count " + std::to_string(new_packet.hops()));
+								DEBUG("DIAG: SENDING PATH-RESP announce for " + announce_destination.hash().toHex().substr(0,8) + " hops=" + std::to_string(new_packet.hops()) + " attached=" + (announce_entry._attached_interface ? announce_entry._attached_interface.toString() : "NONE"));
 							}
 							else {
 								DEBUG("Rebroadcasting announce for " + announce_destination.hash().toHex() + " with hop count " + std::to_string(new_packet.hops()));
@@ -440,6 +444,25 @@ static bool is_backbone_interface(const Interface& iface) {
 				_announces_last_checked = OS::time();
 			}
 
+			// Cull held announces that are older than 60 seconds or if map exceeds cap
+			{
+				const double held_timeout = 60.0;
+				const uint16_t held_maxsize = 32;
+				auto iter = _held_announces.begin();
+				while (iter != _held_announces.end()) {
+					if (OS::time() > ((*iter).second._timestamp + held_timeout)) {
+						DEBUG("Culling expired held announce for " + (*iter).first.toHex());
+						iter = _held_announces.erase(iter);
+					} else {
+						++iter;
+					}
+				}
+				while (_held_announces.size() > held_maxsize) {
+					DEBUG("Culling oldest held announce (cap " + std::to_string(held_maxsize) + ")");
+					_held_announces.erase(_held_announces.begin());
+				}
+			}
+
 			// Cull the packet hashlist if it has reached its max size
 			if (_packet_hashlist.size() > _hashlist_maxsize) {
 				std::set<Bytes>::iterator iter = _packet_hashlist.begin();
@@ -453,6 +476,13 @@ static bool is_backbone_interface(const Interface& iface) {
 				std::set<Bytes>::iterator iter = _boundary_mentioned_addresses.begin();
 				std::advance(iter, _boundary_mentioned_addresses.size() - _boundary_maxsize);
 				_boundary_mentioned_addresses.erase(_boundary_mentioned_addresses.begin(), iter);
+			}
+
+			// Cull the boundary local addresses if it has reached its max size
+			if (_boundary_local_addresses.size() > _boundary_maxsize) {
+				std::set<Bytes>::iterator iter = _boundary_local_addresses.begin();
+				std::advance(iter, _boundary_local_addresses.size() - _boundary_maxsize);
+				_boundary_local_addresses.erase(_boundary_local_addresses.begin(), iter);
 			}
 #endif
 
@@ -680,6 +710,7 @@ static bool is_backbone_interface(const Interface& iface) {
 
 	// CBA send announce retransmission packets
 	for (auto& packet : outgoing) {
+		DEBUG("DIAG: OUTGOING announce dest=" + packet.destination_hash().toHex().substr(0,8) + " type=" + std::to_string(packet.packet_type()) + " ctx=" + std::to_string(packet.context()) + " attached=" + (packet.attached_interface() ? packet.attached_interface().toString() : "NONE"));
 		packet.send();
 	}
 
@@ -777,7 +808,7 @@ static bool is_backbone_interface(const Interface& iface) {
 	if (packet.packet_type() != Type::Packet::ANNOUNCE && packet.destination().type() != Type::Destination::PLAIN && packet.destination().type() != Type::Destination::GROUP && _destination_table.find(packet.destination_hash()) != _destination_table.end()) {
 		TRACE("Transport::outbound: Path to destination is known");
         //outbound_interface = Transport.destination_table[packet.destination_hash][5]
-		DestinationEntry destination_entry = (*_destination_table.find(packet.destination_hash())).second;
+		DestinationEntry& destination_entry = (*_destination_table.find(packet.destination_hash())).second;
 		Interface outbound_interface = destination_entry.receiving_interface();
 
 		// If there's more than one hop to the destination, and we know
@@ -1089,6 +1120,9 @@ static bool is_backbone_interface(const Interface& iface) {
 						
 				if (should_transmit) {
 					TRACE("Transport::outbound: Packet transmission allowed");
+					if (packet.packet_type() == Type::Packet::ANNOUNCE) {
+						DEBUG("DIAG: TX-OUT announce dest=" + packet.destination_hash().toHex().substr(0,8) + " on " + interface.toString());
+					}
 					if (!stored_hash) {
 						// CBA ACCUMULATES
 						_packet_hashlist.insert(packet.packet_hash());
@@ -1111,6 +1145,9 @@ static bool is_backbone_interface(const Interface& iface) {
 				}
 				else {
 					TRACE("Transport::outbound: Packet transmission refused");
+					if (packet.packet_type() == Type::Packet::ANNOUNCE) {
+						DEBUG("DIAG: TX-REFUSED announce dest=" + packet.destination_hash().toHex().substr(0,8) + " refused on " + interface.toString());
+					}
 				}
 			}
 		}
@@ -1216,7 +1253,8 @@ static bool is_backbone_interface(const Interface& iface) {
 		}
 	}
 
-	DEBUG("Filtered packet with hash " + packet.packet_hash().toHex());
+	DEBUG("FILTERED duplicate packet " + packet.packet_hash().toHex().substr(0,8) + " dest=" + packet.destination_hash().toHex().substr(0,8) + " type=" + std::to_string(packet.packet_type()) + " ctx=" + std::to_string(packet.context()));
+	DEBUG("DIAG: FILTERED dup dest=" + packet.destination_hash().toHex().substr(0,8) + " type=" + std::to_string(packet.packet_type()));
 	return false;
 }
 
@@ -1431,6 +1469,7 @@ static bool is_backbone_interface(const Interface& iface) {
 					allowed = true;
 				}
 				if (!allowed) {
+					DEBUG("BOUNDARY: BLOCKED backbone pkt dest=" + packet.destination_hash().toHex().substr(0,8) + " type=" + std::to_string(packet.packet_type()) + " ctx=" + std::to_string(packet.context()) + " hdr=" + std::to_string(packet.header_type()));
 					return;
 				}
 				// === TRANSITIVE WHITELIST ===
@@ -1474,9 +1513,41 @@ static bool is_backbone_interface(const Interface& iface) {
 			}
 		}
 
-	// CBA ACCUMULATES
-		_packet_hashlist.insert(packet.packet_hash());
+	// By default, remember packet hashes to avoid routing
+		// loops in the network, using the packet filter.
+		bool remember_packet_hash = true;
+
+		// If this packet belongs to a link in our link table,
+		// we'll have to defer adding it to the filter list.
+		// In some cases, we might see a packet over a shared-
+		// medium interface, belonging to a link that transports
+		// or terminates with this instance, but before it would
+		// normally reach us. If the packet is appended to the
+		// filter list at this point, link transport will break.
+		if (_link_table.find(packet.destination_hash()) != _link_table.end()) {
+			remember_packet_hash = false;
+		}
+
+		// If this is a link request proof, don't add it until
+		// we are sure it's not actually somewhere else in the
+		// routing chain.
+		if (packet.packet_type() == Type::Packet::PROOF && packet.context() == Type::Packet::LRPROOF) {
+			remember_packet_hash = false;
+		}
+
+		if (remember_packet_hash) {
+			// CBA ACCUMULATES
+			_packet_hashlist.insert(packet.packet_hash());
+		}
 		cache_packet(packet);
+
+#ifdef BOUNDARY_MODE
+		// Log ALL non-announce packets arriving from local (non-backbone) interfaces
+		// to diagnose whether Sideband is sending ANY response packets
+		if (!is_backbone_interface(packet.receiving_interface()) && packet.packet_type() != Type::Packet::ANNOUNCE) {
+			DEBUG("LOCAL-IN: dest=" + packet.destination_hash().toHex().substr(0,8) + " type=" + std::to_string(packet.packet_type()) + " ctx=" + std::to_string(packet.context()) + " hdr=" + std::to_string(packet.header_type()) + " hops=" + std::to_string(packet.hops()) + " sz=" + std::to_string(packet.raw().size()));
+		}
+#endif
 		
 		// Check special conditions for local clients connected
 		// through a shared Reticulum instance
@@ -1604,7 +1675,7 @@ static bool is_backbone_interface(const Interface& iface) {
 					auto destination_iter = _destination_table.find(packet.destination_hash());
 					if (destination_iter != _destination_table.end()) {
 						TRACE("Transport::inbound: Found next-hop path to destination");
-						DestinationEntry destination_entry = (*destination_iter).second;
+						DestinationEntry& destination_entry = (*destination_iter).second;
 						Bytes next_hop = destination_entry._received_from;
 						uint8_t remaining_hops = destination_entry._hops;
 						
@@ -1695,10 +1766,11 @@ static bool is_backbone_interface(const Interface& iface) {
 					else {
 #ifdef BOUNDARY_MODE
 						// BOUNDARY MODE: No path to destination. If packet came from
-						// a local device (non-backbone), request the path.
+						// a local device (non-backbone), request the path — but only if
+						// this isn't a link_id (link data is handled by link transport).
 						{
 							bool from_backbone = is_backbone_interface(packet.receiving_interface());
-							if (!from_backbone) {
+							if (!from_backbone && _link_table.find(packet.destination_hash()) == _link_table.end()) {
 								DEBUG("BOUNDARY: No path to " + packet.destination_hash().toHex() + " for local device packet. Requesting path.");
 								request_path(packet.destination_hash());
 							}
@@ -1796,8 +1868,13 @@ static bool is_backbone_interface(const Interface& iface) {
 							dest_entry._timestamp = OS::time();
 						}
 						else {
-							DEBUG("BOUNDARY: No path to " + packet.destination_hash().toHex() + " for local packet. Requesting path.");
-							request_path(packet.destination_hash());
+							// Only request path if the destination is not a link_id
+							// (link data packets are handled by link transport below,
+							// not by standard transport path lookup).
+							if (_link_table.find(packet.destination_hash()) == _link_table.end()) {
+								DEBUG("BOUNDARY: No path to " + packet.destination_hash().toHex() + " for local packet. Requesting path.");
+								request_path(packet.destination_hash());
+							}
 						}
 					}
 					else {
@@ -1867,8 +1944,9 @@ static bool is_backbone_interface(const Interface& iface) {
 				TRACE("Transport::inbound: Checking if packet is meant for link transport...");
 				auto link_iter = _link_table.find(packet.destination_hash());
 				if (link_iter != _link_table.end()) {
-					TRACE("Transport::inbound: Found link entry, handling link transport");
-					LinkEntry link_entry = (*link_iter).second;
+					DEBUG("LINK-XPORT: pkt for " + packet.destination_hash().toHex().substr(0,8) + " type=" + std::to_string(packet.packet_type()) + " ctx=" + std::to_string(packet.context()) + " hops=" + std::to_string(packet.hops()) + " from=" + packet.receiving_interface().toString() + " hdr=" + std::to_string(packet.header_type()) + " sz=" + std::to_string(packet.raw().size()));
+					LinkEntry& link_entry = (*link_iter).second;
+					DEBUG("LINK-XPORT: entry hops=" + std::to_string(link_entry._hops) + " rem=" + std::to_string(link_entry._remaining_hops) + " recv=" + link_entry._receiving_interface.toString() + " out=" + link_entry._outbound_interface.toString() + " val=" + std::to_string(link_entry._validated));
 					// If receiving and outbound interface is
 					// the same for this link, direction doesn't
 					// matter, and we simply send the packet on.
@@ -1888,21 +1966,32 @@ static bool is_backbone_interface(const Interface& iface) {
 						if (packet.receiving_interface() == link_entry._outbound_interface) {
 							// Also check that expected hop count matches
 							if (packet.hops() == link_entry._remaining_hops) {
-								TRACE("Transport::inbound: Link transporting on inbound interface");
 								outbound_interface = link_entry._receiving_interface;
+							}
+							else {
+								DEBUG("LINK-XPORT: HOP MISMATCH (from outbound) pkt.hops=" + std::to_string(packet.hops()) + " expected=" + std::to_string(link_entry._remaining_hops));
 							}
 						}
 						else if (packet.receiving_interface() == link_entry._receiving_interface) {
 							// Also check that expected hop count matches
 							if (packet.hops() == link_entry._hops) {
-								TRACE("Transport::inbound: Link transporting on outbound interface");
 								outbound_interface = link_entry._outbound_interface;
 							}
+							else {
+								DEBUG("LINK-XPORT: HOP MISMATCH (from receiving) pkt.hops=" + std::to_string(packet.hops()) + " expected=" + std::to_string(link_entry._hops));
+							}
+						}
+						else {
+							DEBUG("LINK-XPORT: IFACE MISMATCH recv=" + packet.receiving_interface().toString() + " entry_recv=" + link_entry._receiving_interface.toString() + " entry_out=" + link_entry._outbound_interface.toString());
 						}
 					}
 
 					if (outbound_interface) {
-						TRACE("Transport::inbound: Transmitting link transport packet");
+						DEBUG("LINK-XPORT: FWD to " + outbound_interface.toString());
+						// Add this packet to the filter hashlist now that
+						// we have determined it's actually our turn to
+						// process it (matching Python Transport line 1544).
+						_packet_hashlist.insert(packet.packet_hash());
 						// CBA RESERVE
 						//Bytes new_raw;
 						Bytes new_raw(512);
@@ -1916,7 +2005,7 @@ static bool is_backbone_interface(const Interface& iface) {
 						link_entry._timestamp = OS::time();
 					}
 					else {
-						//p pass
+						DEBUG("LINK-XPORT: DROPPED (no outbound interface resolved)");
 					}
 				}
 			}
@@ -1931,6 +2020,7 @@ static bool is_backbone_interface(const Interface& iface) {
 		// of queued announce rebroadcasts once handed to the next node.
 		if (packet.packet_type() == Type::Packet::ANNOUNCE) {
 			TRACE("Transport::inbound: Packet is ANNOUNCE");
+			DEBUG("DIAG: ANNOUNCE-IN dest=" + packet.destination_hash().toHex().substr(0,8) + " iface=" + packet.receiving_interface().toString() + " hops=" + std::to_string(packet.hops()));
 			Bytes received_from;
 			//p local_destination = next((d for d in Transport.destinations if d.hash == packet.destination_hash), None)
 #if defined(DESTINATIONS_SET)
@@ -2190,7 +2280,9 @@ static bool is_backbone_interface(const Interface& iface) {
 									block_rebroadcasts,
 									attached_interface
 								);
-								// CBA ACCUMULATES
+								// BUG FIX: erase before insert since std::map::insert() is
+								// a no-op when key exists (Python dict assignment overwrites)
+								_announce_table.erase(packet.destination_hash());
 								_announce_table.insert({packet.destination_hash(), announce_entry});
 							}
 						}
@@ -2219,7 +2311,9 @@ static bool is_backbone_interface(const Interface& iface) {
 									block_rebroadcasts,
 									attached_interface
 								);
-								// CBA ACCUMULATES
+								// BUG FIX: erase before insert since std::map::insert() is
+								// a no-op when key exists (Python dict assignment overwrites)
+								_announce_table.erase(packet.destination_hash());
 								_announce_table.insert({packet.destination_hash(), announce_entry});
 							}
 						}
@@ -2347,6 +2441,7 @@ static bool is_backbone_interface(const Interface& iface) {
 						}
 
 						DEBUG("Destination " + packet.destination_hash().toHex() + " is now " + std::to_string(announce_hops) + " hops away via " + received_from.toHex() + " on " + packet.receiving_interface().toString());
+						DEBUG("DIAG: STORED path " + packet.destination_hash().toHex().substr(0,8) + " hops=" + std::to_string(announce_hops) + " iface=" + packet.receiving_interface().toString());
 
 						// BOUNDARY MODE: Register destinations seen via non-backbone interfaces (Whitelist 1)
 #ifdef BOUNDARY_MODE
@@ -2521,16 +2616,16 @@ static bool is_backbone_interface(const Interface& iface) {
 				// This is a link request proof, check if it
 				// needs to be transported
 				if ((Reticulum::transport_enabled() || for_local_client_link || from_local_client) && _link_table.find(packet.destination_hash()) != _link_table.end()) {
-					TRACE("Handling link request proof...");
-					LinkEntry link_entry = (*_link_table.find(packet.destination_hash())).second;
-					DEBUG("PROOF DEBUG: recv_iface=" + packet.receiving_interface().toString() + " out_iface=" + link_entry._outbound_interface.toString());
+					DEBUG("LRPROOF-XPORT: handling proof for link " + packet.destination_hash().toHex().substr(0,8));
+					LinkEntry& link_entry = (*_link_table.find(packet.destination_hash())).second;
+					DEBUG("LRPROOF-XPORT: recv_iface=" + packet.receiving_interface().toString() + " entry_out=" + link_entry._outbound_interface.toString() + " entry_recv=" + link_entry._receiving_interface.toString());
 
 					bool interface_match = (packet.receiving_interface() == link_entry._outbound_interface);
 					if (interface_match) {
 						try {
 							size_t expected_size = (Type::Identity::SIGLENGTH/8 + Type::Link::ECPUBSIZE/2);
 							size_t expected_size_with_mtu = expected_size + Type::Link::LINK_MTU_SIZE;
-							DEBUG("PROOF DEBUG: data_size=" + std::to_string(packet.data().size()) + " expected=" + std::to_string(expected_size) + " or " + std::to_string(expected_size_with_mtu) + " raw_size=" + std::to_string(packet.raw().size()));
+							DEBUG("LRPROOF-XPORT: data_size=" + std::to_string(packet.data().size()) + " expected=" + std::to_string(expected_size) + " or " + std::to_string(expected_size_with_mtu));
 							if (packet.data().size() == expected_size || packet.data().size() == expected_size_with_mtu) {
 								Bytes signalling_bytes;
 								if (packet.data().size() == expected_size_with_mtu) {
@@ -2540,17 +2635,17 @@ static bool is_backbone_interface(const Interface& iface) {
 								Bytes peer_pub_bytes = packet.data().mid(Type::Identity::SIGLENGTH/8, Type::Link::ECPUBSIZE/2);
 								Identity peer_identity = Identity::recall(link_entry._destination_hash);
 								if (!peer_identity) {
-									DEBUG("PROOF DEBUG: Cannot recall identity for " + link_entry._destination_hash.toHex() + ", dropping proof.");
+									DEBUG("LRPROOF-XPORT: FAILED cannot recall identity for " + link_entry._destination_hash.toHex().substr(0,8));
 								}
 								else {
-								DEBUG("PROOF DEBUG: peer_identity recalled for " + link_entry._destination_hash.toHex() + " valid=" + std::to_string(!peer_identity.get_public_key().empty()));
+								DEBUG("LRPROOF-XPORT: peer identity recalled for " + link_entry._destination_hash.toHex().substr(0,8));
 								Bytes peer_sig_pub_bytes = peer_identity.get_public_key().mid(Type::Link::ECPUBSIZE/2, Type::Link::ECPUBSIZE/2);
 
 								Bytes signed_data = packet.destination_hash() + peer_pub_bytes + peer_sig_pub_bytes + signalling_bytes;
 								Bytes signature = packet.data().left(Type::Identity::SIGLENGTH/8);
 
 								if (peer_identity.validate(signature, signed_data)) {
-									TRACE("Link request proof validated for transport via " + link_entry._receiving_interface.toString());
+									DEBUG("LRPROOF-XPORT: VALIDATED, forwarding to " + link_entry._receiving_interface.toString());
 									//p new_raw = packet.raw[0:1]
 									// CBA RESERVE
 									//Bytes new_raw = packet.raw().left(1);
@@ -2560,13 +2655,18 @@ static bool is_backbone_interface(const Interface& iface) {
 									new_raw << packet.hops();
 									//p new_raw += packet.raw[2:]
 									new_raw << packet.raw().mid(2);
+									DEBUG("LRPROOF-XPORT: new_raw size=" + std::to_string(new_raw.size()) + " hops=" + std::to_string(packet.hops()) + " flags=0x" + new_raw.left(1).toHex() + " dest=" + new_raw.mid(2, 10).toHex().substr(0,16));
 									link_entry._validated = true;
 									transmit(link_entry._receiving_interface, new_raw);
+									DEBUG("LRPROOF-XPORT: transmit() returned OK");
 								}
 								else {
-									DEBUG("Invalid link request proof in transport for link " + packet.destination_hash().toHex() + ", dropping proof.");
+									DEBUG("LRPROOF-XPORT: INVALID signature for link " + packet.destination_hash().toHex().substr(0,8) + ", dropping proof.");
 								}
 								} // end peer_identity valid
+							}
+							else {
+								DEBUG("LRPROOF-XPORT: UNEXPECTED data_size=" + std::to_string(packet.data().size()) + " (expected " + std::to_string(expected_size) + " or " + std::to_string(expected_size_with_mtu) + "), dropping proof.");
 							}
 						}
 						catch (std::exception& e) {
@@ -2574,14 +2674,14 @@ static bool is_backbone_interface(const Interface& iface) {
 						}
 					}
 					else {
-						DEBUG("PROOF DEBUG: interface mismatch - recv=" + packet.receiving_interface().toString() + " expected_out=" + link_entry._outbound_interface.toString());
-						DEBUG("Link request proof received on wrong interface, not transporting it.");
+						DEBUG("LRPROOF-XPORT: IFACE MISMATCH recv=" + packet.receiving_interface().toString() + " expected_out=" + link_entry._outbound_interface.toString());
+						DEBUG("LRPROOF-XPORT: Proof received on wrong interface, not transporting.");
 					}
 				}
 				else {
-					// Check if we can deliver it to a local
-					// pending link
-					TRACEF("Handling proof for link request %s", packet.destination_hash().toHex().c_str());
+					// Not in link_table or transport not enabled — check
+					// if we can deliver it to a local pending link
+					DEBUG("LRPROOF-XPORT: not in link_table or transport not enabled, checking local pending links (transport=" + std::to_string(Reticulum::transport_enabled()) + " for_lcl=" + std::to_string(for_local_client_link) + " from_lcl=" + std::to_string(from_local_client) + " in_lt=" + std::to_string(_link_table.find(packet.destination_hash()) != _link_table.end()) + ")");
 					// CBA Must make a copy of _pending_links before traversing since it gets modified
 					//for (auto link : _pending_links) {
 					std::set<Link> pending_links(_pending_links);
@@ -3369,6 +3469,7 @@ will announce it.
 
 /*static*/ void Transport::path_request_handler(const Bytes& data, const Packet& packet) {
 	TRACE("Transport::path_request_handler");
+	if (data.size() >= 16) { DEBUG("DIAG: PATH-REQ for " + data.left(16).toHex().substr(0,8) + " from " + packet.receiving_interface().toString()); }
 	try {
 		// If there is at least bytes enough for a destination
 		// hash in the packet, we assume those bytes are the
@@ -3505,13 +3606,21 @@ will announce it.
 			}
 			else {
 				DEBUG("Answering path request for destination " + destination_hash.toHex() + interface_str + ", path is known");
+				DEBUG("DIAG: PATH-RESP for " + destination_hash.toHex().substr(0,8) + interface_str);
 
 				double now = OS::time();
 				uint8_t retries = Type::Transport::PATHFINDER_R;
 				uint8_t local_rebroadcasts = 0;
 				bool block_rebroadcasts = true;
-				// CBA TODO Determine if okay to take hops directly from DestinationEntry
-				uint8_t announce_hops = announce_packet.hops();
+				// BUG FIX: Must use DestinationEntry._hops, NOT cached announce_packet.hops().
+				// The cached packet's raw bytes still have the pre-increment wire hops,
+				// because Packet::hops(val) only updates an in-memory field, not raw[1].
+				// Python Transport.py explicitly sets packet.hops = path_table[dest][IDX_PT_HOPS]
+				// after retrieving the cached packet (line 2736), but C++ was using the
+				// stale raw-byte value. This caused PATH_RESPONSE to report fewer hops than
+				// actual, making the sender's expected_hops too low, which then caused
+				// LRPROOF hop-count validation to fail silently.
+				uint8_t announce_hops = destination_entry._hops;
 
 				double retransmit_timeout = 0;
 				if (is_from_local_client) {
@@ -3533,30 +3642,16 @@ will announce it.
 					AnnounceEntry& held_entry = (*announce_iter).second;
 					// CBA ACCUMULATES
 					_held_announces.insert({announce_packet.destination_hash(), held_entry});
+					// BUG FIX: Must erase old entry before insert(),
+					// since std::map::insert() is a no-op when key exists.
+					// Python dict assignment overwrites, but C++ insert does not.
+					_announce_table.erase(announce_iter);
 				}
 
-/*
-				// CBA ACCUMULATES
-				_announce_table.insert({announce_packet.destination_hash(), {
-					now,
-					retransmit_timeout,
-					retries,
-					// BUG?
-					//destination_entry.receiving_interface,
-					destination_entry._received_from,
-					announce_hops,
-					announce_packet,
-					local_rebroadcasts,
-					block_rebroadcasts,
-					attached_interface
-				}});
-*/
 				AnnounceEntry announce_entry(
 					now,
 					retransmit_timeout,
 					retries,
-					// BUG?
-					//destination_entry.receiving_interface,
 					destination_entry._received_from,
 					announce_hops,
 					announce_packet,

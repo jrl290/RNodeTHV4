@@ -251,6 +251,8 @@ protected:
                 size_t written = _clients[i].client.write(frame_buf, flen);
                 if (written == 0) {
                     _cleanup_client(i, "write failed");
+                } else if (written < flen) {
+                    Serial.printf("[TcpIF] PARTIAL write to client %d: %u/%u bytes\r\n", i, (unsigned)written, (unsigned)flen);
                 }
             }
         }
