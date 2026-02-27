@@ -693,7 +693,11 @@ void setup() {
         HEAD("Boundary Mode: TCP backbone DISABLED", RNS::LOG_TRACE);
       }
 
-      // Register local TCP server if enabled (MODE_ACCESS_POINT — no announce forwarding)
+      // Register local TCP server if enabled
+      // MODE_GATEWAY allows announce rebroadcasts so local TCP clients
+      // can discover each other and receive backbone announces.
+      // (MODE_ACCESS_POINT blocks all announce broadcasts in outbound(),
+      //  which prevented local clients from finding paths to each other.)
       if (boundary_state.wifi_enabled && boundary_state.ap_tcp_enabled) {
         local_tcp_interface_ptr = new TcpInterface(
             TCP_IF_MODE_SERVER,
@@ -706,12 +710,12 @@ void setup() {
         // to prevent unnecessary reconnection cycles that leak lwIP memory
         local_tcp_interface_ptr->setReadTimeout(600000);
         local_tcp_rns_interface = local_tcp_interface_ptr;
-        local_tcp_rns_interface.mode(RNS::Type::Interface::MODE_ACCESS_POINT);
+        local_tcp_rns_interface.mode(RNS::Type::Interface::MODE_GATEWAY);
         RNS::Transport::register_interface(local_tcp_rns_interface);
 
         {
           char _bm_msg[128];
-          snprintf(_bm_msg, sizeof(_bm_msg), "Local TCP server: port %d (ACCESS_POINT mode)",
+          snprintf(_bm_msg, sizeof(_bm_msg), "Local TCP server: port %d (GATEWAY mode)",
                    boundary_state.ap_tcp_port);
           HEAD(_bm_msg, RNS::LOG_TRACE);
         }

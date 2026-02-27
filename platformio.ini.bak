@@ -1,0 +1,557 @@
+; PlatformIO Project Configuration File
+;
+;   Build options: build flags, source filter
+;   Upload options: custom upload port, speed and extra flags
+;   Library options: dependencies, extra library storages
+;   Advanced options: extra scripting
+;
+; Please visit documentation for the other options and examples
+; https://docs.platformio.org/page/projectconf.html
+
+[platformio]
+; Change source and include directories to root of project since RNode places them here
+include_dir = .
+src_dir = .
+
+[env]
+framework = arduino
+monitor_speed = 115200
+upload_speed = 460800
+build_flags = 
+	-Wall
+	;-Wextra
+	-Wno-missing-field-initializers
+	-Wno-format
+	-I.
+	; CBA Define following to disable DEBUG build
+	;-DNDEBUG
+	; CBA Define following to include RNS stack
+	-DHAS_RNS
+	-DRNS_USE_FS
+	-DRNS_PERSIST_PATHS
+	-DMSGPACK_USE_BOOST=OFF
+	; CBA Define following to disable LFS asserts
+	;-DLFS_NO_ASSERT
+	; ???
+	;-DLFS_YES_TRACE
+	; ???
+	;-DCORE_DEBUG_LEVEL=5
+	; ??? NO
+	;-DLOG_LOCAL_LEVEL=5
+	;-DCONFIG_LOG_DEFAULT_LEVEL=5
+lib_deps = 
+	ArduinoJson@^7.4.2
+	MsgPack@^0.4.2
+	adafruit/Adafruit SSD1306@^2.5.9
+	https://github.com/attermann/Crypto.git
+; Exclude directories in root from sources
+build_src_filter = +<*> -<variants/>
+extra_scripts = pre:extra_script.py
+
+[env:rnode-ng-20]
+platform = espressif32
+board = ttgo-lora32-v2
+custom_variant = ng20
+board_build.partitions = no_ota.csv
+board_build.filesystem = littlefs
+build_flags = 
+	${env.build_flags}
+	-DBOARD_MODEL=BOARD_RNODE_NG_20
+lib_deps =
+	${env.lib_deps}
+	XPowersLib@^0.2.1
+	adafruit/Adafruit NeoPixel@^1.12.0
+	attermann/microReticulum
+
+[env:rnode-ng-21]
+platform = espressif32
+board = ttgo-lora32-v21
+custom_variant = ng21
+board_build.partitions = no_ota.csv
+board_build.filesystem = littlefs
+build_flags = 
+	${env.build_flags}
+	-DBOARD_MODEL=BOARD_RNODE_NG_21
+lib_deps =
+	${env.lib_deps}
+	XPowersLib@^0.2.1
+	adafruit/Adafruit NeoPixel@^1.12.0
+	attermann/microReticulum
+
+[env:ttgo-t-beam]
+platform = espressif32
+board = ttgo-t-beam
+custom_variant = tbeam
+board_build.partitions = no_ota.csv
+board_build.filesystem = littlefs
+build_flags = 
+	${env.build_flags}
+	-DBOARD_MODEL=BOARD_TBEAM
+lib_deps =
+	${env.lib_deps}
+	XPowersLib@^0.2.1
+	attermann/microReticulum
+
+[env:ttgo-t-beam-sx1262]
+platform = espressif32
+board = ttgo-t-beam
+custom_variant = tbeam_sx1262
+board_build.partitions = no_ota.csv
+board_build.filesystem = littlefs
+build_flags = 
+	${env.build_flags}
+	-DBOARD_MODEL=BOARD_TBEAM
+	-DMODEM=SX1262
+lib_deps =
+	${env.lib_deps}
+	XPowersLib@^0.2.1
+	attermann/microReticulum
+
+[env:ttgo-t-beam-supreme]
+platform = espressif32
+board = ttgo-t-beam
+custom_variant = tbeam_supreme
+board_build.partitions = no_ota.csv
+board_build.filesystem = littlefs
+build_flags = 
+	${env.build_flags}
+	-DBOARD_MODEL=BOARD_TBEAM_S_V1
+	-DMODEM=SX1262
+lib_deps =
+	${env.lib_deps}
+	XPowersLib@^0.2.1
+	Adafruit_SH110X
+	adafruit/Adafruit SH110X@^2.1.14
+	attermann/microReticulum
+
+[env:lilygo-t3-s3]
+platform = espressif32
+board = lilygo-t3-s3
+custom_variant = t3s3
+board_build.partitions = no_ota.csv
+board_build.filesystem = littlefs
+build_flags = 
+	${env.build_flags}
+	-DBOARD_MODEL=BOARD_T3S3
+	-DMODEM=SX1262
+lib_deps =
+	${env.lib_deps}
+	XPowersLib@^0.2.1
+	attermann/microReticulum
+
+[env:lilygo-t3-s3-sx127x]
+platform = espressif32
+board = lilygo-t3-s3
+custom_variant = t3s3_sx127x
+board_build.partitions = no_ota.csv
+board_build.filesystem = littlefs
+build_flags = 
+	${env.build_flags}
+	-DBOARD_MODEL=BOARD_T3S3
+	-DMODEM=SX1276
+lib_deps =
+	${env.lib_deps}
+	XPowersLib@^0.2.1
+	attermann/microReticulum
+
+[env:lilygo-t3-s3-sx1280-pa]
+platform = espressif32
+board = lilygo-t3-s3
+custom_variant = t3s3_sx1280_pa
+board_build.partitions = no_ota.csv
+board_build.filesystem = littlefs
+build_flags = 
+	${env.build_flags}
+	-DBOARD_MODEL=BOARD_T3S3
+	-DMODEM=SX1280
+lib_deps =
+	${env.lib_deps}
+	XPowersLib@^0.2.1
+	attermann/microReticulum
+
+[env:lilygo-t-deck]
+platform = espressif32
+board = esp32-s3-devkitc-1
+custom_variant = tdeck
+board_build.filesystem = littlefs
+; Flash / memory layout
+board_upload.flash_size = 16MB
+board_upload.maximum_size = 16777216
+board_build.partitions = default_16MB.csv
+; Enable PSRAM + correct flash mode
+board_build.flash_mode = qio
+board_build.psram_type = opi
+board_build.arduino.memory_type = qio_opi
+build_flags = 
+	${env.build_flags}
+	-DBOARD_MODEL=BOARD_TDECK
+    -DBOARD_HAS_PSRAM=1
+	-DARDUINO_USB_MODE=1
+    -DCORE_DEBUG_LEVEL=1
+    ; Enable UARDUINO_ USB_ CDC_ ON_ BOOT will start printing and wait for terminal access during startup
+    -DARDUINO_USB_CDC_ON_BOOT=1
+    ; Enable UARDUINO_USB_CDC_ON_BOOT will turn off printing and will not block when using the battery
+    ; -UARDUINO_USB_CDC_ON_BOOT
+lib_deps =
+	${env.lib_deps}
+	XPowersLib@^0.2.1
+	attermann/microReticulum
+
+[env:ttgo-lora32-v1]
+platform = espressif32
+board = ttgo-lora32-v1
+custom_variant = lora32v10
+board_build.partitions = no_ota.csv
+board_build.filesystem = littlefs
+build_flags = 
+	${env.build_flags}
+	-DBOARD_MODEL=BOARD_LORA32_V1_0
+lib_deps =
+	${env.lib_deps}
+	XPowersLib@^0.2.1
+	attermann/microReticulum
+
+[env:ttgo-lora32-v2]
+platform = espressif32
+board = ttgo-lora32-v2
+custom_variant = lora32v20
+board_build.partitions = no_ota.csv
+board_build.filesystem = littlefs
+build_flags = 
+	${env.build_flags}
+	-DBOARD_MODEL=BOARD_LORA32_V2_0
+lib_deps =
+	${env.lib_deps}
+	XPowersLib@^0.2.1
+	attermann/microReticulum
+
+[env:ttgo-lora32-v2-extled]
+platform = espressif32
+board = ttgo-lora32-v2
+custom_variant = lora32v20_extled
+board_build.partitions = no_ota.csv
+board_build.filesystem = littlefs
+build_flags = 
+	${env.build_flags}
+	-DBOARD_MODEL=BOARD_LORA32_V1_0
+	-DEXTERNAL_LEDS=true
+lib_deps =
+	${env.lib_deps}
+	XPowersLib@^0.2.1
+	attermann/microReticulum
+
+[env:ttgo-lora32-v21]
+platform = espressif32
+board = ttgo-lora32-v21
+custom_variant = lora32v21
+board_build.partitions = no_ota.csv
+board_build.filesystem = littlefs
+build_flags = 
+	${env.build_flags}
+	-DBOARD_MODEL=BOARD_LORA32_V2_1
+lib_deps =
+	${env.lib_deps}
+	XPowersLib@^0.2.1
+	attermann/microReticulum
+
+[env:ttgo-lora32-v21-extled]
+platform = espressif32
+board = ttgo-lora32-v21
+custom_variant = lora32v21_extled
+board_build.partitions = no_ota.csv
+board_build.filesystem = littlefs
+build_flags = 
+	${env.build_flags}
+	-DBOARD_MODEL=BOARD_LORA32_V2_1
+	-DEXTERNAL_LEDS=true
+lib_deps =
+	${env.lib_deps}
+	XPowersLib@^0.2.1
+	attermann/microReticulum
+
+[env:ttgo-lora32-v21-tcxo]
+platform = espressif32
+board = ttgo-lora32-v21
+custom_variant = lora32v21_extled
+board_build.partitions = no_ota.csv
+board_build.filesystem = littlefs
+build_flags = 
+	${env.build_flags}
+	-DBOARD_MODEL=BOARD_LORA32_V2_1
+	-DENABLE_TCXO=true
+lib_deps =
+	${env.lib_deps}
+	XPowersLib@^0.2.1
+	attermann/microReticulum
+
+[env:heltec_wifi_lora_32_V2]
+platform = espressif32
+board = heltec_wifi_lora_32_V2
+custom_variant = heltec32v2
+board_build.partitions = no_ota.csv
+board_build.filesystem = littlefs
+build_flags = 
+	${env.build_flags}
+	-DBOARD_MODEL=BOARD_LORA32_V2_1
+lib_deps =
+	${env.lib_deps}
+	XPowersLib@^0.2.1
+	attermann/microReticulum
+
+[env:heltec_wifi_lora_32_V2-extled]
+platform = espressif32
+board = heltec_wifi_lora_32_V2
+custom_variant = heltec32v2_extled
+board_build.partitions = no_ota.csv
+board_build.filesystem = littlefs
+build_flags = 
+	${env.build_flags}
+	-DBOARD_MODEL=BOARD_LORA32_V2_1
+	-DEXTERNAL_LEDS=true
+lib_deps =
+	${env.lib_deps}
+	XPowersLib@^0.2.1
+	attermann/microReticulum
+
+[env:heltec_wifi_lora_32_V3]
+platform = espressif32
+board = heltec_wifi_lora_32_V3
+custom_variant = heltec32v3
+board_build.partitions = no_ota.csv
+board_build.filesystem = littlefs
+build_flags = 
+	${env.build_flags}
+	-DBOARD_MODEL=BOARD_HELTEC32_V3
+lib_deps =
+	${env.lib_deps}
+	XPowersLib@^0.2.1
+	attermann/microReticulum
+
+[env:heltec_wifi_lora_32_V4]
+platform = espressif32
+board = esp32-s3-devkitc-1
+custom_variant = heltec32v4
+board_build.partitions = no_ota.csv
+board_build.filesystem = littlefs
+build_flags = 
+	${env.build_flags}
+	-DBOARD_MODEL=BOARD_HELTEC32_V4
+	-DARDUINO_USB_CDC_ON_BOOT=1
+lib_deps =
+	${env.lib_deps}
+	XPowersLib@^0.2.1
+	attermann/microReticulum
+
+[env:heltec_V4_boundary]
+platform = espressif32
+board = esp32-s3-devkitc-1
+custom_variant = heltec32v4_boundary
+board_build.filesystem = littlefs
+; Flash / memory layout for 16MB flash + 2MB PSRAM
+board_upload.flash_size = 16MB
+board_upload.maximum_size = 16777216
+board_build.partitions = default_16MB.csv
+board_build.flash_mode = qio
+board_build.psram_type = qio
+board_build.arduino.memory_type = qio_qspi
+build_flags = 
+	${env.build_flags}
+	-DBOARD_MODEL=BOARD_HELTEC32_V4
+	-DARDUINO_USB_CDC_ON_BOOT=1
+	-DBOARD_HAS_PSRAM=1
+	-DBOUNDARY_MODE
+	; --- Boundary mode defaults (override via EEPROM at runtime) ---
+	; TCP server mode (0=server, 1=client)
+	-DBOUNDARY_TCP_MODE=0
+	; TCP listen/connect port
+	-DBOUNDARY_TCP_PORT=4242
+	; Backbone host for client mode (empty = server mode)
+	; -DBOUNDARY_BACKBONE_HOST=\"192.168.1.100\"
+	; -DBOUNDARY_BACKBONE_PORT=4242
+lib_deps =
+	${env.lib_deps}
+	XPowersLib@^0.2.1
+	attermann/microReticulum
+monitor_filters = esp32_exception_decoder
+
+[env:heltec_V4_boundary-local]
+platform = espressif32
+board = esp32-s3-devkitc-1
+custom_variant = heltec32v4_boundary_local
+board_build.filesystem = littlefs
+board_upload.flash_size = 16MB
+board_upload.maximum_size = 16777216
+board_build.partitions = default_16MB.csv
+board_build.flash_mode = qio
+board_build.psram_type = qio
+board_build.arduino.memory_type = qio_qspi
+build_flags = 
+	${env.build_flags}
+	-DBOARD_MODEL=BOARD_HELTEC32_V4
+	-DARDUINO_USB_CDC_ON_BOOT=1
+	-DBOARD_HAS_PSRAM=1
+	-DBOUNDARY_MODE
+	-DBOUNDARY_TCP_MODE=0
+	-DBOUNDARY_TCP_PORT=4242
+lib_deps =
+	${env.lib_deps}
+	XPowersLib@^0.2.1
+	microReticulum=symlink://../microReticulum
+monitor_filters = esp32_exception_decoder
+
+[env:featheresp32]
+platform = espressif32
+board = featheresp32
+custom_variant = featheresp32
+board_build.partitions = no_ota.csv
+board_build.filesystem = littlefs
+build_flags = 
+	${env.build_flags}
+	-DBOARD_MODEL=BOARD_HUZZAH32
+lib_deps =
+	${env.lib_deps}
+	XPowersLib@^0.2.1
+	attermann/microReticulum
+
+[env:seeed_xiao_esp32s3]
+platform = espressif32
+board = seeed_xiao_esp32s3
+custom_variant = xiao_esp32s3
+board_build.partitions = no_ota.csv
+board_build.filesystem = littlefs
+build_flags = 
+	${env.build_flags}
+	-DBOARD_MODEL=BOARD_XIAO_S3
+lib_deps =
+	${env.lib_deps}
+	XPowersLib@^0.2.1
+	attermann/microReticulum
+
+[env:generic-esp32]
+platform = espressif32
+board = esp32dev
+custom_variant = esp32_generic
+board_build.partitions = no_ota.csv
+board_build.filesystem = littlefs
+build_flags = 
+	${env.build_flags}
+	-DBOARD_MODEL=BOARD_GENERIC_ESP32
+lib_deps =
+	${env.lib_deps}
+	XPowersLib@^0.2.1
+	attermann/microReticulum
+
+[env:wiscore_rak4631]
+platform = nordicnrf52
+board = rak4630
+custom_variant = rak4631
+board_build.partitions = no_ota.csv
+board_build.filesystem = littlefs
+build_src_filter = ${env.build_src_filter} +<variants/rak4630>
+build_flags = 
+	${env.build_flags}
+	-I variants/rak4630
+	-fexceptions
+	-DBOARD_MODEL=BOARD_RAK4631
+	-DRNS_USE_TLSF=1
+	-DRNS_USE_ALLOCATOR=1
+lib_deps =
+	${env.lib_deps}
+	attermann/microReticulum
+
+
+
+[env:ttgo-t-beam-local]
+platform = espressif32
+board = ttgo-t-beam
+upload_speed = 460800
+custom_variant = tbeam_local
+board_build.partitions = no_ota.csv
+board_build.filesystem = littlefs
+build_flags =
+	${env.build_flags}
+	-fexceptions
+	-DBOARD_MODEL=BOARD_TBEAM
+	; CBA TEST
+	;-DUSE_FLASHFS=1
+lib_deps =
+	${env.lib_deps}
+	XPowersLib@^0.2.1
+	microReticulum=symlink://../microReticulum
+	Adafruit_SPIFlash=symlink://../Adafruit_SPIFlash
+monitor_filters = esp32_exception_decoder
+
+[env:ttgo-lora32-v21-local]
+platform = espressif32
+board = ttgo-lora32-v21
+upload_speed = 460800
+custom_variant = lora32v21_local
+board_build.partitions = no_ota.csv
+board_build.filesystem = littlefs
+build_flags = 
+	${env.build_flags}
+	-DBOARD_MODEL=BOARD_LORA32_V2_1
+lib_deps =
+	${env.lib_deps}
+	XPowersLib@^0.2.1
+	microReticulum=symlink://../microReticulum
+monitor_filters = esp32_exception_decoder
+
+[env:heltec_wifi_lora_32_V4-local]
+platform = espressif32
+board = esp32-s3-devkitc-1
+custom_variant = heltec32v4_local
+board_build.partitions = no_ota.csv
+board_build.filesystem = littlefs
+build_flags = 
+	${env.build_flags}
+	-DBOARD_MODEL=BOARD_HELTEC32_V4
+	-DARDUINO_USB_CDC_ON_BOOT=1
+lib_deps =
+	${env.lib_deps}
+	XPowersLib@^0.2.1
+	microReticulum=symlink://../microReticulum
+monitor_filters = esp32_exception_decoder
+
+[env:wiscore_rak4631-local]
+platform = nordicnrf52
+board = rak4630
+custom_variant = rak4631_local
+board_build.partitions = no_ota.csv
+board_build.filesystem = littlefs
+build_src_filter = ${env.build_src_filter} +<variants/rak4630>
+build_flags = 
+	${env.build_flags}
+	-I variants/rak4630
+	-fexceptions
+	-DBOARD_MODEL=BOARD_RAK4631
+	; CBA TEST
+	-DRNS_USE_TLSF=1
+	-DRNS_USE_ALLOCATOR=1
+	;-DUSE_FLASHFS=1
+build_unflags = -fno-exceptions
+lib_deps =
+	${env.lib_deps}
+	microReticulum=symlink://../microReticulum
+	Adafruit_SPIFlash=symlink://../Adafruit_SPIFlash
+
+[env:heltec_t114_local]
+;upload_port = /dev/cu.usbmodem1101
+platform = nordicnrf52
+board = nrf52840_dk_adafruit
+custom_variant = heltec_t114_local
+board_build.partitions = no_ota.csv
+board_build.filesystem = littlefs
+build_flags = 
+	${env.build_flags}
+	-fexceptions
+	-DBOARD_MODEL=BOARD_HELTEC_T114
+	; CBA TEST
+	-DRNS_USE_TLSF=1
+	-DRNS_USE_ALLOCATOR=1
+build_unflags = -fno-exceptions
+lib_deps =
+	${env.lib_deps}
+	https://github.com/liamcottle/esp8266-oled-ssd1306#e16cee124fe26490cb14880c679321ad8ac89c95
+	adafruit/Adafruit NeoPixel@^1.12.0
+	microReticulum=symlink://../microReticulum
