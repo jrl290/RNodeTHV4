@@ -430,8 +430,8 @@ namespace RNS { namespace Type {
 		//static const uint16_t MAX_RECEIPTS         = 1024;         // Maximum number of receipts to keep track of
 		static const uint16_t MAX_RECEIPTS         = 20;         // Maximum number of receipts to keep track of
 		static const uint8_t MAX_RATE_TIMESTAMPS   = 16;           // Maximum number of announce timestamps to keep per destination
-		static const uint8_t PERSIST_RANDOM_BLOBS  = 32;           // Maximum number of random blobs per destination to persist to disk
-		static const uint8_t MAX_RANDOM_BLOBS      = 64;           // Maximum number of random blobs per destination to keep in memory
+		static const uint8_t PERSIST_RANDOM_BLOBS  = 8;            // Maximum number of random blobs per destination to persist to disk (reduced for MCU memory)
+		static const uint8_t MAX_RANDOM_BLOBS      = 16;           // Maximum number of random blobs per destination to keep in memory (reduced for MCU memory)
 
 		// CBA MCU
 		//static const uint32_t DESTINATION_TIMEOUT = 60*60*24*7;   // Destination table entries are removed if unused for one week

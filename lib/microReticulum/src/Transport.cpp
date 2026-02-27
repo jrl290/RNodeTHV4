@@ -2256,6 +2256,26 @@ static bool is_backbone_interface(const Interface& iface) {
 
 						random_blobs.insert(random_blob);
 
+						// Trim random_blobs to prevent unbounded memory growth
+						// (matching Python: random_blobs = random_blobs[-MAX_RANDOM_BLOBS:])
+						if (random_blobs.size() > MAX_RANDOM_BLOBS) {
+							// Keep only the MAX_RANDOM_BLOBS blobs with the highest
+							// timestamps (bytes 5-9 big-endian). Extract, sort by
+							// timestamp desc, keep top N, rebuild set.
+							std::vector<Bytes> blob_vec(random_blobs.begin(), random_blobs.end());
+							std::sort(blob_vec.begin(), blob_vec.end(), [](const Bytes& a, const Bytes& b) {
+								// Sort descending by timestamp (bytes 5-9)
+								uint64_t ts_a = OS::from_bytes_big_endian(a.data() + 5, 5);
+								uint64_t ts_b = OS::from_bytes_big_endian(b.data() + 5, 5);
+								return ts_a > ts_b;
+							});
+							random_blobs.clear();
+							for (size_t i = 0; i < MAX_RANDOM_BLOBS && i < blob_vec.size(); i++) {
+								random_blobs.insert(blob_vec[i]);
+							}
+							TRACEF("Trimmed random_blobs to %d entries for %s", random_blobs.size(), packet.destination_hash().toHex().c_str());
+						}
+
 						if ((Reticulum::transport_enabled() || Transport::from_local_client(packet)) && packet.context() != Type::Packet::PATH_RESPONSE) {
 							// Insert announce into announce table for retransmission
 
@@ -3993,6 +4013,21 @@ TRACEF("Transport::start: buffer size %d bytes", Persistence::_buffer.size());
 					for (const auto& destination_hash : invalid_paths) {
 						_destination_table.erase(destination_hash);
 					}
+
+					// Enforce maxsize on loaded paths (trim oldest if over limit)
+					if (_destination_table.size() > _path_table_maxsize) {
+						DEBUGF("Transport::start: trimming loaded path table from %d to %d entries", _destination_table.size(), _path_table_maxsize);
+						cull_path_table();
+					}
+
+					// Memory diagnostic after path table load
+					size_t total_blobs = 0;
+					for (const auto& [hash, entry] : _destination_table) {
+						total_blobs += entry._random_blobs.size();
+					}
+					DEBUGF("Transport::start: path table: %d entries, %d total random_blobs (est. %d bytes)",
+						_destination_table.size(), total_blobs, total_blobs * 90);
+
 					return true;
 				}
 				else {
@@ -4044,6 +4079,24 @@ TRACEF("Transport::start: buffer size %d bytes", Persistence::_buffer.size());
 		double save_start = OS::time();
 		DEBUGF("Saving %d path table entries to storage...", _destination_table.size());
 
+		// Enforce maxpersist: create a trimmed copy for serialization
+		// keeping only the most recently used entries (by timestamp)
+		std::map<Bytes, DestinationEntry> persist_table;
+		if (_destination_table.size() <= _path_table_maxpersist) {
+			persist_table = _destination_table;
+		}
+		else {
+			// Sort by timestamp descending, keep only maxpersist entries
+			std::vector<std::pair<Bytes, DestinationEntry>> sorted_entries(_destination_table.begin(), _destination_table.end());
+			std::sort(sorted_entries.begin(), sorted_entries.end(), [](const std::pair<Bytes, DestinationEntry>& a, const std::pair<Bytes, DestinationEntry>& b) {
+				return a.second._timestamp > b.second._timestamp;
+			});
+			for (size_t i = 0; i < _path_table_maxpersist && i < sorted_entries.size(); i++) {
+				persist_table.insert(sorted_entries[i]);
+			}
+			DEBUGF("Trimmed path table from %d to %d entries for persistence", _destination_table.size(), persist_table.size());
+		}
+
 /*p
 		serialised_destinations = []
 		for destination_hash in Transport.destination_table:
@@ -4087,7 +4140,7 @@ TRACEF("Transport::start: buffer size %d bytes", Persistence::_buffer.size());
 
 #if CUSTOM
 		{
-			Persistence::_document.set(_destination_table);
+			Persistence::_document.set(persist_table);
 			TRACEF("Transport::write_path_table: doc size %d bytes", Persistence::_document.memoryUsage());
 
 			//size_t size = 8192;
@@ -4141,7 +4194,7 @@ TRACE("Transport::write_path_table: buffer size " + std::to_string(Persistence::
 			TRACE("Transport::write_path_table: failed to serialize");
 		}
 #else	// CUSTOM
-		uint32_t crc = Persistence::crc(_destination_table);
+		uint32_t crc = Persistence::crc(persist_table);
 		if (_destination_table_crc > 0 && crc == _destination_table_crc) {
 			TRACE("Transport::write_path_table: no change detected, skipping write");
 		}
@@ -4149,8 +4202,8 @@ TRACE("Transport::write_path_table: buffer size " + std::to_string(Persistence::
 			TRACE("Transport::write_path_table: change detected, writing...");
 			char destination_table_path[Type::Reticulum::FILEPATH_MAXSIZE];
 			snprintf(destination_table_path, Type::Reticulum::FILEPATH_MAXSIZE, "%s/destination_table", Reticulum::_storagepath);
-			if (Persistence::serialize(_destination_table, destination_table_path, _destination_table_crc) > 0) {
-				TRACEF("Transport::write_path_table: wrote %d entries, %d bytes", _destination_table.size(), Persistence::_buffer.size());
+			if (Persistence::serialize(persist_table, destination_table_path, _destination_table_crc) > 0) {
+				TRACEF("Transport::write_path_table: wrote %d entries, %d bytes", persist_table.size(), Persistence::_buffer.size());
 				success = true;
 			}
 		}

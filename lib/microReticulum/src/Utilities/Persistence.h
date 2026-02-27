@@ -4,6 +4,7 @@
 //  then they MUST be included BEFORE this header is included.
 #include "Transport.h"
 #include "Type.h"
+#include "Utilities/OS.h"
 
 #include <ArduinoJson.h>
 
@@ -278,7 +279,23 @@ namespace ArduinoJson {
 			dst["received_from"] = src._received_from;
 			dst["announce_hops"] = src._hops;
 			dst["expires"] = src._expires;
-			dst["random_blobs"] = src._random_blobs;
+			// Trim random_blobs to PERSIST_RANDOM_BLOBS before writing to disk
+			if (src._random_blobs.size() > RNS::Type::Transport::PERSIST_RANDOM_BLOBS) {
+				std::vector<RNS::Bytes> blob_vec(src._random_blobs.begin(), src._random_blobs.end());
+				std::sort(blob_vec.begin(), blob_vec.end(), [](const RNS::Bytes& a, const RNS::Bytes& b) {
+					uint64_t ts_a = RNS::Utilities::OS::from_bytes_big_endian(a.data() + 5, 5);
+					uint64_t ts_b = RNS::Utilities::OS::from_bytes_big_endian(b.data() + 5, 5);
+					return ts_a > ts_b;
+				});
+				std::set<RNS::Bytes> trimmed;
+				for (size_t i = 0; i < RNS::Type::Transport::PERSIST_RANDOM_BLOBS && i < blob_vec.size(); i++) {
+					trimmed.insert(blob_vec[i]);
+				}
+				dst["random_blobs"] = trimmed;
+			}
+			else {
+				dst["random_blobs"] = src._random_blobs;
+			}
 /*
 			//dst["interface_hash"] = src._receiving_interface;
 			if (src._receiving_interface) {
@@ -320,6 +337,19 @@ namespace ArduinoJson {
 			dst._hops = src["announce_hops"];
 			dst._expires = src["expires"];
 			dst._random_blobs = src["random_blobs"].as<std::set<RNS::Bytes>>();
+			// Trim random_blobs loaded from flash to MAX_RANDOM_BLOBS
+			if (dst._random_blobs.size() > RNS::Type::Transport::MAX_RANDOM_BLOBS) {
+				std::vector<RNS::Bytes> blob_vec(dst._random_blobs.begin(), dst._random_blobs.end());
+				std::sort(blob_vec.begin(), blob_vec.end(), [](const RNS::Bytes& a, const RNS::Bytes& b) {
+					uint64_t ts_a = RNS::Utilities::OS::from_bytes_big_endian(a.data() + 5, 5);
+					uint64_t ts_b = RNS::Utilities::OS::from_bytes_big_endian(b.data() + 5, 5);
+					return ts_a > ts_b;
+				});
+				dst._random_blobs.clear();
+				for (size_t i = 0; i < RNS::Type::Transport::MAX_RANDOM_BLOBS && i < blob_vec.size(); i++) {
+					dst._random_blobs.insert(blob_vec[i]);
+				}
+			}
 /*
 			//dst._receiving_interface = src["interface_hash"];
 			RNS::Bytes interface_hash = src["interface_hash"];
