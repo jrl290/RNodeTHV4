@@ -160,7 +160,7 @@ float epd_update_fps  = 0.5;
 #define DISP_MODE_LANDSCAPE 0x01
 #define DISP_MODE_PORTRAIT  0x02
 #define DISP_PIN_SIZE   6
-#define DISPLAY_BLANKING_TIMEOUT 15*1000
+#define DISPLAY_BLANKING_TIMEOUT 1*60*1000
 uint8_t disp_mode = DISP_MODE_UNKNOWN;
 uint8_t disp_ext_fb = false;
 unsigned char fb[512];
@@ -371,6 +371,7 @@ bool display_init() {
       uint8_t display_address = DISP_ADDR;
     #endif
 
+    // EEPROM blanking value is stored as minutes (0 = disabled)
     #if HAS_EEPROM
       if (EEPROM.read(eeprom_addr(ADDR_CONF_BSET)) == CONF_OK_BYTE) {
         uint8_t db_timeout = EEPROM.read(eeprom_addr(ADDR_CONF_DBLK));
@@ -378,7 +379,7 @@ bool display_init() {
           display_blanking_enabled = false;
         } else {
           display_blanking_enabled = true;
-          display_blanking_timeout = db_timeout*1000;
+          display_blanking_timeout = (uint32_t)db_timeout * 60UL * 1000UL;
         }
       }
     #elif MCU_VARIANT == MCU_NRF52
@@ -388,7 +389,7 @@ bool display_init() {
           display_blanking_enabled = false;
         } else {
           display_blanking_enabled = true;
-          display_blanking_timeout = db_timeout*1000;
+          display_blanking_timeout = (uint32_t)db_timeout * 60UL * 1000UL;
         }
       }
     #endif

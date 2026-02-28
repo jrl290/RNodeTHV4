@@ -256,6 +256,35 @@ static void config_send_html() {
     html += F(" dBm (with PA)</p>");
     #endif
 
+    // ── Options Section ──
+    html += F(
+        "<h2>&#x2699; Options</h2>"
+        "<label>Display Blanking</label>"
+        "<select name='disp_blank'>"
+    );
+
+    // Read current blanking timeout from EEPROM (stored as minutes, 0 = never)
+    uint8_t cur_blank = 0;
+    if (EEPROM.read(eeprom_addr(ADDR_CONF_BSET)) == CONF_OK_BYTE) {
+        cur_blank = EEPROM.read(eeprom_addr(ADDR_CONF_DBLK));
+    }
+
+    static const uint8_t blank_vals[]   = { 0, 1, 5, 10, 30, 60 };
+    static const char* blank_labels[]   = { "Never", "1 minute", "5 minutes", "10 minutes", "30 minutes", "60 minutes" };
+    static const int blank_count = 6;
+
+    for (int i = 0; i < blank_count; i++) {
+        html += F("<option value='");
+        html += String(blank_vals[i]);
+        html += "'";
+        if (blank_vals[i] == cur_blank) html += F(" selected");
+        html += ">";
+        html += blank_labels[i];
+        html += F("</option>");
+    }
+    html += F("</select>");
+    html += F("<p class='note'>Turn off display after inactivity to save power</p>");
+
     // ── Submit ──
     html += F(
         "<button type='submit'>Save &amp; Reboot</button>"
@@ -291,6 +320,20 @@ static void config_handle_save() {
 
     // ── WiFi enable setting ──
     boundary_state.wifi_enabled = (config_server->arg("wifi_en").toInt() == 1);
+
+    // ── Display blanking (EEPROM stores minutes, 0 = disabled) ──
+    int blank_minutes = config_server->arg("disp_blank").toInt();
+    if (blank_minutes <= 0) {
+        display_blanking_enabled = false;
+        eeprom_update(eeprom_addr(ADDR_CONF_BSET), CONF_OK_BYTE);
+        eeprom_update(eeprom_addr(ADDR_CONF_DBLK), 0);
+    } else {
+        uint8_t blank_val = (uint8_t)(blank_minutes > 255 ? 255 : blank_minutes);
+        display_blanking_enabled = true;
+        display_blanking_timeout = (uint32_t)blank_val * 60UL * 1000UL;
+        eeprom_update(eeprom_addr(ADDR_CONF_BSET), CONF_OK_BYTE);
+        eeprom_update(eeprom_addr(ADDR_CONF_DBLK), blank_val);
+    }
 
     // ── TCP backbone settings ──
     boundary_state.tcp_mode = (uint8_t)config_server->arg("tcp_mode").toInt(); // 0=disabled, 1=client
