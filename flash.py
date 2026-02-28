@@ -47,7 +47,7 @@ import time
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 
-VERSION         = "1.0.13"
+VERSION         = "1.0.17"
 CHIP            = "esp32s3"
 FLASH_MODE      = "qio"
 FLASH_FREQ      = "80m"
@@ -135,6 +135,45 @@ def is_merged_binary(firmware_path):
     except Exception:
         pass
     return False
+
+
+def extract_app_from_merged(merged_path):
+    """Extract the app-only portion from a merged binary.
+
+    A merged binary starts at 0x0000 and includes bootloader, partition table,
+    boot_app0, and the app firmware.  The region between the partition table
+    (0x8000-0x8BFF) and boot_app0 (0xE000) contains the NVS partition
+    (0x9000-0xDFFF) which is filled with 0xFF padding by esptool merge_bin.
+    Flashing a merged binary therefore wipes all saved settings.
+
+    This function extracts bytes from APP_ADDR (0x10000) to the end of the
+    file, producing an app-only binary that can be flashed at 0x10000 without
+    touching NVS/EEPROM.
+
+    Returns the path to the extracted app-only binary, or None on failure.
+    """
+    try:
+        file_size = os.path.getsize(merged_path)
+        if file_size <= APP_ADDR:
+            print(f"  Warning: Merged binary too small ({file_size} bytes) to contain app data.")
+            return None
+
+        with open(merged_path, "rb") as f:
+            f.seek(APP_ADDR)
+            app_data = f.read()
+
+        if not app_data:
+            return None
+
+        base, ext = os.path.splitext(merged_path)
+        app_path = f"{base}_app{ext}"
+        with open(app_path, "wb") as f:
+            f.write(app_data)
+
+        return app_path
+    except Exception as e:
+        print(f"  Warning: Could not extract app from merged binary: {e}")
+        return None
 
 
 def _find_in_platformio_or_release(build_path, release_name):
@@ -683,6 +722,51 @@ def check_partition_table(port, esptool_cmd, baud=None):
     return False
 
 
+def check_app_on_device(port, esptool_cmd, baud=None):
+    """Check whether app firmware is present on the device.
+
+    Reads a small chunk from APP_ADDR (0x10000).  If the region is all 0xFF
+    (erased flash), no app is present and the device needs a full flash.
+
+    Returns True if app firmware is detected, False if blank/absent.
+    """
+    import tempfile
+    if baud is None:
+        baud = BAUD_RATE()
+
+    read_size = 256  # enough to distinguish blank from real firmware
+    tmp = tempfile.NamedTemporaryFile(suffix=".bin", delete=False)
+    tmp.close()
+    try:
+        cmd = esptool_cmd + [
+            "--chip", CHIP,
+            "--port", port,
+            "--baud", baud,
+            "read_flash",
+            f"0x{APP_ADDR:x}",
+            str(read_size),
+            tmp.name,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            print("  Warning: Could not read app region from device")
+            return True  # assume app exists if we can't check
+        with open(tmp.name, "rb") as f:
+            data = f.read()
+        # All 0xFF means flash is blank — no app present
+        if data == b'\xff' * len(data):
+            return False
+        return True
+    except Exception as e:
+        print(f"  Warning: App check failed: {e}")
+        return True  # assume app exists if we can't check
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+
 def reset_to_bootloader(port):
     """Open serial port at 1200 baud to trigger ESP32-S3 USB bootloader reset.
 
@@ -934,11 +1018,17 @@ Examples:
                     print(f"  2. Specify a file:               python flash.py --board {_board} --file <path>")
                     sys.exit(1)
 
-        if not args.full:
-            print(f"App-only update (preserves WiFi/boundary settings)")
-            print(f"  Use --full for a complete flash, or --erase for recovery.")
+    # ── Device checks & flash decision ──────────────────────────────────────
+    #
+    # Flow:
+    #   1. --full or --erase on CLI → full_flash = True
+    #   2. Check if app firmware exists on device → if not → full_flash = True
+    #   3. Check partition table matches expected → if not → full_flash = True
+    #   4. Ask user "Erase flash before writing?" → Y → full_flash = True
+    #   5. full_flash → flash merged binary at 0x0000
+    #   6. Otherwise → extract app from merged, flash at 0x10000
 
-    # Flash — reuse early-detected port if available
+    # Reuse early-detected port, or find one now
     port = args.port or _early_port or find_serial_port()
     if not port:
         print("\nError: No serial port detected!")
@@ -948,37 +1038,65 @@ Examples:
 
     print(f"\nSerial port: {port}")
     print(f"Firmware:    {firmware_path} ({os.path.getsize(firmware_path):,} bytes)")
-    print()
 
-    # ── Partition table pre-flight check ────────────────────────────────────
-    # For app-only flashes, verify the device has the correct partition table.
-    # If not, auto-upgrade to a full flash (mandatory — no user choice).
-    if not is_merged_binary(firmware_path) and not args.erase:
+    full_flash = args.full or args.erase
+
+    if not full_flash:
+        print("\nChecking device state...")
+        has_app = check_app_on_device(port, esptool_cmd, baud)
+        if not has_app:
+            print("  No app firmware on device — full flash required")
+            full_flash = True
+
+    if not full_flash:
         pt_ok = check_partition_table(port, esptool_cmd, baud)
         if not pt_ok:
-            print()
-            print("╔══════════════════════════════════════════════════════════════╗")
-            print("║  Partition table mismatch — upgrading to full flash.        ║")
-            print("║  This will write bootloader + partition table + app.        ║")
-            print("║  WiFi/boundary EEPROM settings will be preserved.           ║")
-            print("╚══════════════════════════════════════════════════════════════╝")
-            print()
+            print("  Partition table mismatch — full flash required")
+            full_flash = True
+
+    if not full_flash:
+        try:
+            erase_choice = input("\nErase flash before writing? (wipes all settings) [y/N] ").strip().lower()
+        except EOFError:
+            erase_choice = ""
+        if erase_choice == "y":
+            full_flash = True
+
+    # ── Prepare firmware based on flash decision ────────────────────────────
+    if full_flash:
+        # Need the merged binary — ensure we have one
+        if not is_merged_binary(firmware_path):
+            print("\nCreating merged binary for full flash...")
             merged = auto_merge_app_binary(firmware_path, esptool_cmd)
             if merged:
                 firmware_path = merged
-                print(f"  Using merged binary: {firmware_path}")
-                print(f"  Size: {os.path.getsize(firmware_path):,} bytes")
             else:
-                print("  ERROR: Cannot auto-merge — missing boot components.")
+                print("  ERROR: Cannot create merged binary — missing boot components.")
                 print(f"  Build with PlatformIO first:  pio run -e {PIO_ENV()}")
-                print(f"  Or flash a merged binary:     python flash.py --board {_board} --full")
                 sys.exit(1)
+
+        print(f"\n  Full flash: {os.path.basename(firmware_path)} → 0x{BOOTLOADER_ADDR:04x}")
+        print(f"  Size: {os.path.getsize(firmware_path):,} bytes")
+        print(f"  ⚠  This will overwrite all settings (NVS/EEPROM)")
+    else:
+        # Extract app-only from merged binary to preserve settings
+        if is_merged_binary(firmware_path):
+            app_path = extract_app_from_merged(firmware_path)
+            if app_path:
+                firmware_path = app_path
+            else:
+                print("\n  ERROR: Could not extract app from merged binary.")
+                sys.exit(1)
+
+        print(f"\n  App-only update: {os.path.basename(firmware_path)} → 0x{APP_ADDR:05x}")
+        print(f"  Size: {os.path.getsize(firmware_path):,} bytes")
+        print(f"  WiFi/boundary settings will be preserved")
 
     # ── Interactive options ─────────────────────────────────────────────────
 
     # Offer 1200 baud reset if device might be stuck
     try:
-        reset_choice = input("Reset device to download mode first? (try if device is stuck) [y/N] ").strip().lower()
+        reset_choice = input("\nReset device to download mode first? (try if device is stuck) [y/N] ").strip().lower()
     except EOFError:
         reset_choice = ""
     if reset_choice == "y":
@@ -992,53 +1110,14 @@ Examples:
         else:
             print(f"Warning: No ports found after reset. Continuing with {port}")
 
-    # Offer erase unless --erase was already passed
-    if not args.erase:
-        try:
-            erase_choice = input("Erase flash before writing? (wipes all settings) [y/N] ").strip().lower()
-        except EOFError:
-            erase_choice = ""
-        if erase_choice == "y":
-            args.erase = True
-            # Erase needs bootloader+partitions, auto-merge if we have app-only
-
-    # ── Safety check: erase + app-only → auto-merge ────────────────────────
-    if args.erase and not is_merged_binary(firmware_path):
-        print()
-        print("╔══════════════════════════════════════════════════════════════╗")
-        print("║  Erase selected with app-only binary — auto-merging boot   ║")
-        print("║  components (bootloader + partition table + boot_app0) so   ║")
-        print("║  the device remains bootable after erase.                  ║")
-        print("╚══════════════════════════════════════════════════════════════╝")
-        print()
-        merged = auto_merge_app_binary(firmware_path, esptool_cmd)
-        if merged:
-            firmware_path = merged
-            print(f"\nUsing auto-merged binary: {firmware_path}")
-            print(f"  Size: {os.path.getsize(firmware_path):,} bytes")
-            print()
-        else:
-            print()
-            print("Auto-merge failed. Options:")
-            print("  1) Skip erase and flash app-only (preserves existing NVS/bootloader)")
-            print("  2) Abort")
-            try:
-                fallback = input("\nSkip erase and continue with app-only flash? [Y/n] ").strip().lower()
-            except EOFError:
-                fallback = ""
-            if fallback == "n":
-                print("Aborted.")
-                sys.exit(1)
-            args.erase = False
-            print("Erase skipped. Continuing with app-only flash...\n")
-
     confirm = input("\nFlash firmware? [Y/n] ").strip().lower()
     if confirm and confirm != "y":
         print("Aborted.")
         sys.exit(0)
 
+    # ── Erase flash (only when --erase was explicitly passed) ───────────────
     if args.erase:
-        print(f"Erasing flash on {port}...")
+        print(f"\nErasing flash on {port}...")
         erase_cmd = esptool_cmd + [
             "--chip", CHIP,
             "--port", port,
