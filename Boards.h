@@ -379,6 +379,8 @@
       #define HAS_BUSY true
       #define DIO2_AS_RF_SWITCH true
 
+      #define PA_MAX_OUTPUT  22
+
       // Following pins are for the SX1262
       const int pin_cs = 8;
       const int pin_busy = 13;
@@ -902,6 +904,11 @@
       #error An unsupported nRF board was selected. Cannot compile RNode firmware.
     #endif
 
+  #endif
+
+  #ifndef PA_MAX_OUTPUT
+    // Set a default sane 22dBm
+    #define PA_MAX_OUTPUT 22
   #endif
 
   #ifndef DISPLAY_SCALE
