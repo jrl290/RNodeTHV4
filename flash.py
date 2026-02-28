@@ -117,6 +117,7 @@ def PIO_ENV():
 
 # ESP32 partition table magic bytes (first two bytes of a partition table entry)
 PARTITION_TABLE_MAGIC = b'\xaa\x50'
+PARTITION_TABLE_SIZE  = 0xC00   # 3072 bytes
 
 
 def is_merged_binary(firmware_path):
@@ -608,6 +609,80 @@ def auto_merge_app_binary(app_binary_path, esptool_cmd):
     return None
 
 
+def read_device_partitions(port, esptool_cmd, baud=None):
+    """Read the partition table from the connected device.
+
+    Uses esptool read_flash to read PARTITION_TABLE_SIZE bytes from
+    PARTITIONS_ADDR (0x8000).
+
+    Returns the raw bytes on success, or None on failure.
+    """
+    import tempfile
+    if baud is None:
+        baud = BAUD_RATE()
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".bin", delete=False)
+    tmp.close()
+    try:
+        cmd = esptool_cmd + [
+            "--chip", CHIP,
+            "--port", port,
+            "--baud", baud,
+            "read_flash",
+            f"0x{PARTITIONS_ADDR:x}",
+            str(PARTITION_TABLE_SIZE),
+            tmp.name,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            return None
+        with open(tmp.name, "rb") as f:
+            return f.read()
+    except Exception:
+        return None
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+
+def check_partition_table(port, esptool_cmd, baud=None):
+    """Compare the device's partition table against the expected one.
+
+    Returns:
+      True  — partition table matches (or no expected table to compare against)
+      False — partition table mismatch (device needs full flash)
+    """
+    expected_path = find_partitions()
+    if not expected_path:
+        # Can't check — no reference partition table available
+        return True
+
+    with open(expected_path, "rb") as f:
+        expected = f.read()
+
+    print("Checking device partition table...")
+    device_data = read_device_partitions(port, esptool_cmd, baud)
+    if device_data is None:
+        print("  Could not read partition table from device")
+        # Can't verify — assume OK (user can always use --full)
+        return True
+
+    # Compare only the meaningful portion (both should be PARTITION_TABLE_SIZE)
+    if device_data[:len(expected)] == expected:
+        print("  Partition table OK ✓")
+        return True
+
+    # Check if device has any valid partition table at all
+    if device_data[:2] != PARTITION_TABLE_MAGIC:
+        print("  No valid partition table found on device (blank or corrupted)")
+    else:
+        print("  Partition table MISMATCH — device has a different layout")
+
+    return False
+
+
 def reset_to_bootloader(port):
     """Open serial port at 1200 baud to trigger ESP32-S3 USB bootloader reset.
 
@@ -874,6 +949,30 @@ Examples:
     print(f"\nSerial port: {port}")
     print(f"Firmware:    {firmware_path} ({os.path.getsize(firmware_path):,} bytes)")
     print()
+
+    # ── Partition table pre-flight check ────────────────────────────────────
+    # For app-only flashes, verify the device has the correct partition table.
+    # If not, auto-upgrade to a full flash (mandatory — no user choice).
+    if not is_merged_binary(firmware_path) and not args.erase:
+        pt_ok = check_partition_table(port, esptool_cmd, baud)
+        if not pt_ok:
+            print()
+            print("╔══════════════════════════════════════════════════════════════╗")
+            print("║  Partition table mismatch — upgrading to full flash.        ║")
+            print("║  This will write bootloader + partition table + app.        ║")
+            print("║  WiFi/boundary EEPROM settings will be preserved.           ║")
+            print("╚══════════════════════════════════════════════════════════════╝")
+            print()
+            merged = auto_merge_app_binary(firmware_path, esptool_cmd)
+            if merged:
+                firmware_path = merged
+                print(f"  Using merged binary: {firmware_path}")
+                print(f"  Size: {os.path.getsize(firmware_path):,} bytes")
+            else:
+                print("  ERROR: Cannot auto-merge — missing boot components.")
+                print(f"  Build with PlatformIO first:  pio run -e {PIO_ENV()}")
+                print(f"  Or flash a merged binary:     python flash.py --board {_board} --full")
+                sys.exit(1)
 
     # ── Interactive options ─────────────────────────────────────────────────
 
