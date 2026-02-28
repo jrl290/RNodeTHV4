@@ -1730,6 +1730,34 @@ static bool is_backbone_interface(const Interface& iface) {
 							TRACE("Transport::inbound: Packet is next-hop LINKREQUEST");
 							double now = OS::time();
 							double proof_timeout = now + Type::Link::ESTABLISHMENT_TIMEOUT_PER_HOP * std::max((uint8_t)1, remaining_hops);
+
+							// === MTU Clamping (v1.0.12) ===
+							// When forwarding a LINKREQUEST through this transport node,
+							// clamp the link MTU signalling to min(prev-hop, next-hop)
+							// interface HW_MTU.  Without this, endpoints negotiate a
+							// segment size that exceeds this node's buffer capacity,
+							// causing silent truncation and resource transfer stalls.
+							uint16_t path_mtu = Link::mtu_from_lr_packet(packet);
+							if (path_mtu > 0) {
+								uint16_t ph_mtu = packet.receiving_interface().HW_MTU();
+								uint16_t nh_mtu = outbound_interface.HW_MTU();
+								if (nh_mtu == 0) {
+									DEBUG("MTU CLAMP: No next-hop HW MTU, stripping link MTU signalling");
+									new_raw = new_raw.left(new_raw.size() - Type::Link::LINK_MTU_SIZE);
+								} else if (!outbound_interface.AUTOCONFIGURE_MTU() && !outbound_interface.FIXED_MTU()) {
+									DEBUG("MTU CLAMP: Outbound interface doesn't support MTU config, stripping link MTU signalling");
+									new_raw = new_raw.left(new_raw.size() - Type::Link::LINK_MTU_SIZE);
+								} else {
+									if (nh_mtu < path_mtu || (ph_mtu > 0 && ph_mtu < path_mtu)) {
+										uint16_t clamped = std::min(nh_mtu, (ph_mtu > 0) ? ph_mtu : nh_mtu);
+										RNS::Type::Link::link_mode mode = Link::mode_from_lr_packet(packet);
+										Bytes clamped_mtu_bytes = Link::signalling_bytes(clamped, mode);
+										new_raw = new_raw.left(new_raw.size() - Type::Link::LINK_MTU_SIZE) + clamped_mtu_bytes;
+										DEBUGF("MTU CLAMP: path=%u ph=%u nh=%u -> clamped=%u", path_mtu, ph_mtu, nh_mtu, clamped);
+									}
+								}
+							}
+
 							LinkEntry link_entry(
 								now,
 								next_hop,
@@ -1848,6 +1876,25 @@ static bool is_backbone_interface(const Interface& iface) {
 								double now = OS::time();
 								double proof_timeout = now + Type::Link::ESTABLISHMENT_TIMEOUT_PER_HOP
 									* std::max((uint8_t)1, remaining_hops);
+
+								// === MTU Clamping (v1.0.12) ===
+								uint16_t path_mtu = Link::mtu_from_lr_packet(packet);
+								if (path_mtu > 0) {
+									uint16_t ph_mtu = packet.receiving_interface().HW_MTU();
+									uint16_t nh_mtu = outbound_interface.HW_MTU();
+									if (nh_mtu == 0) {
+										new_raw = new_raw.left(new_raw.size() - Type::Link::LINK_MTU_SIZE);
+									} else if (!outbound_interface.AUTOCONFIGURE_MTU() && !outbound_interface.FIXED_MTU()) {
+										new_raw = new_raw.left(new_raw.size() - Type::Link::LINK_MTU_SIZE);
+									} else if (nh_mtu < path_mtu || (ph_mtu > 0 && ph_mtu < path_mtu)) {
+										uint16_t clamped = std::min(nh_mtu, (ph_mtu > 0) ? ph_mtu : nh_mtu);
+										RNS::Type::Link::link_mode mode = Link::mode_from_lr_packet(packet);
+										Bytes clamped_mtu_bytes = Link::signalling_bytes(clamped, mode);
+										new_raw = new_raw.left(new_raw.size() - Type::Link::LINK_MTU_SIZE) + clamped_mtu_bytes;
+										DEBUGF("MTU CLAMP: local->backbone path=%u ph=%u nh=%u -> %u", path_mtu, ph_mtu, nh_mtu, clamped);
+									}
+								}
+
 								LinkEntry link_entry(
 									now, next_hop, outbound_interface, remaining_hops,
 									packet.receiving_interface(), packet.hops(),
@@ -1913,6 +1960,25 @@ static bool is_backbone_interface(const Interface& iface) {
 									double now = OS::time();
 									double proof_timeout = now + Type::Link::ESTABLISHMENT_TIMEOUT_PER_HOP
 										* std::max((uint8_t)1, remaining_hops);
+
+									// === MTU Clamping (v1.0.12) ===
+									uint16_t path_mtu = Link::mtu_from_lr_packet(packet);
+									if (path_mtu > 0) {
+										uint16_t ph_mtu = packet.receiving_interface().HW_MTU();
+										uint16_t nh_mtu = outbound_interface.HW_MTU();
+										if (nh_mtu == 0) {
+											new_raw = new_raw.left(new_raw.size() - Type::Link::LINK_MTU_SIZE);
+										} else if (!outbound_interface.AUTOCONFIGURE_MTU() && !outbound_interface.FIXED_MTU()) {
+											new_raw = new_raw.left(new_raw.size() - Type::Link::LINK_MTU_SIZE);
+										} else if (nh_mtu < path_mtu || (ph_mtu > 0 && ph_mtu < path_mtu)) {
+											uint16_t clamped = std::min(nh_mtu, (ph_mtu > 0) ? ph_mtu : nh_mtu);
+											RNS::Type::Link::link_mode mode = Link::mode_from_lr_packet(packet);
+											Bytes clamped_mtu_bytes = Link::signalling_bytes(clamped, mode);
+											new_raw = new_raw.left(new_raw.size() - Type::Link::LINK_MTU_SIZE) + clamped_mtu_bytes;
+											DEBUGF("MTU CLAMP: backbone->local path=%u ph=%u nh=%u -> %u", path_mtu, ph_mtu, nh_mtu, clamped);
+										}
+									}
+
 									LinkEntry link_entry(
 										now, next_hop, outbound_interface, remaining_hops,
 										packet.receiving_interface(), packet.hops(),

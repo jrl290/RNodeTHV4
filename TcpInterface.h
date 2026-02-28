@@ -57,6 +57,7 @@ struct TcpClient {
     // HDLC deframe state
     bool       in_frame;
     bool       escape;
+    bool       truncated;
     uint8_t    rxbuf[TCP_IF_HW_MTU];
     uint16_t   rxlen;
 };
@@ -84,6 +85,9 @@ public:
         _IN = true;
         _OUT = true;
         _HW_MTU = TCP_IF_HW_MTU;
+        // v1.0.12: Tell Transport this interface has a known fixed MTU,
+        // enabling link MTU clamping when forwarding LINKREQUEST packets.
+        _FIXED_MTU = true;
         // TCP links are effectively 10 Mbps+. Setting a realistic
         // bitrate lets Transport prefer TCP paths over LoRa when
         // both exist for the same destination.
@@ -100,6 +104,7 @@ public:
             _clients[i].active = false;
             _clients[i].in_frame = false;
             _clients[i].escape = false;
+            _clients[i].truncated = false;
             _clients[i].rxlen = 0;
             _clients[i].last_activity = 0;
         }
@@ -189,6 +194,7 @@ public:
                     }
                 }
             }
+
         }
 
         // Process incoming data from all active clients
@@ -245,8 +251,14 @@ protected:
         }
         frame_buf[flen++] = HDLC_FLAG;
 
-        // Send to all connected clients (non-blocking: no flush)
+        // Send to all connected clients EXCEPT the one that sent this packet.
+        // v1.0.10: Echo prevention — if this send_outgoing was triggered by
+        // Transport forwarding a packet received from client N, skip client N
+        // to prevent echo-back that floods TCP buffers and stalls resource transfers.
         for (int i = 0; i < TCP_IF_MAX_CLIENTS; i++) {
+            if (i == _last_rx_client_idx) {
+                continue;  // Don't echo back to sender
+            }
             if (_clients[i].active && _clients[i].client.connected()) {
                 size_t written = _clients[i].client.write(frame_buf, flen);
                 if (written == 0) {
@@ -292,6 +304,7 @@ private:
         c.active = false;
         c.in_frame = false;
         c.escape = false;
+        c.truncated = false;
         c.rxlen = 0;
         _num_clients--;
 
@@ -307,13 +320,29 @@ private:
 
         if (byte == HDLC_FLAG) {
             if (c.in_frame && c.rxlen > 0) {
-                // End of frame — deliver to RNS
-                RNS::Bytes data(c.rxbuf, c.rxlen);
-                handle_incoming(data);
-                c.rxlen = 0;
+                // v1.0.12: If the frame exceeded the buffer, drop it entirely
+                // instead of delivering a truncated/corrupt packet to Transport.
+                if (c.truncated) {
+                    Serial.printf("[TcpIF] DROPPED oversized frame from client %d (>%d bytes, buffered %u)\r\n",
+                                  idx, TCP_IF_HW_MTU, c.rxlen);
+                    c.truncated = false;
+                    c.rxlen = 0;
+                } else {
+                    // End of frame — deliver to RNS
+                    // v1.0.10: Set _last_rx_client_idx so send_outgoing() can
+                    // skip echoing this packet back to the client that sent it.
+                    // The entire call chain (handle_incoming → Transport::inbound
+                    // → transmit → send_outgoing) is synchronous, so this is safe.
+                    RNS::Bytes data(c.rxbuf, c.rxlen);
+                    _last_rx_client_idx = idx;
+                    handle_incoming(data);
+                    _last_rx_client_idx = -1;
+                    c.rxlen = 0;
+                }
             }
             c.in_frame = true;
             c.escape = false;
+            c.truncated = false;
             c.rxlen = 0;
         } else if (c.in_frame) {
             if (c.escape) {
@@ -321,12 +350,16 @@ private:
                 c.escape = false;
                 if (c.rxlen < TCP_IF_HW_MTU) {
                     c.rxbuf[c.rxlen++] = byte;
+                } else {
+                    c.truncated = true;
                 }
             } else if (byte == HDLC_ESC) {
                 c.escape = true;
             } else {
                 if (c.rxlen < TCP_IF_HW_MTU) {
                     c.rxbuf[c.rxlen++] = byte;
+                } else {
+                    c.truncated = true;
                 }
             }
         }
@@ -355,6 +388,7 @@ private:
                 _clients[i].active = true;
                 _clients[i].in_frame = false;
                 _clients[i].escape = false;
+                _clients[i].truncated = false;
                 _clients[i].rxlen = 0;
                 _clients[i].last_activity = millis();
                 _num_clients++;
@@ -410,6 +444,7 @@ private:
             _clients[0].active = true;
             _clients[0].in_frame = false;
             _clients[0].escape = false;
+            _clients[0].truncated = false;
             _clients[0].rxlen = 0;
             _clients[0].last_activity = millis();
             _num_clients = 1;
@@ -446,6 +481,7 @@ private:
     IPAddress   _resolved_ip;
     uint16_t    _consecutive_failures;
     bool        _started;
+    int         _last_rx_client_idx = -1;  // v1.0.10: echo prevention — tracks which client is currently delivering an inbound frame
 };
 
 #endif // BOUNDARY_MODE

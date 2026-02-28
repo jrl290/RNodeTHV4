@@ -273,3 +273,151 @@ are unaffected because they bypass the hashlist check in `packet_filter`.
 the Python reference implementation. Add `_packet_hashlist.insert()` inside
 the link transport forwarding block after direction is confirmed.
 
+---
+
+## 8. Missing Link MTU Clamping — 70% Resource Transfer Stall (CRITICAL)
+
+### Summary
+
+**Status:** FIXED (v1.0.12, 2026-02-28)
+
+`Transport.cpp` did not clamp the link MTU when forwarding `LINKREQUEST` packets through the transport node. The Python reference implementation (`Transport.py` lines 1458–1480) performs this clamping to ensure the negotiated link MTU does not exceed the capacity of any intermediate hop's interface.
+
+### Bug 8a — LINKREQUEST forwarded without MTU clamping
+
+**File:** `Transport.cpp`, all three LINKREQUEST forwarding paths:
+1. Standard transport forwarding (next-hop routing, ~line 1729)
+2. Boundary mode: local → backbone (~line 1875)
+3. Boundary mode: backbone → local (~line 1959)
+
+**Code (before fix):**
+```cpp
+if (packet.packet_type() == Type::Packet::LINKREQUEST) {
+    // ... creates link_entry, inserts into _link_table ...
+    // MTU signalling bytes in new_raw are forwarded UNCHANGED
+}
+```
+
+The Python reference (`Transport.py` lines 1458–1480) does:
+```python
+path_mtu = RNS.Link.mtu_from_lr_packet(packet)
+if path_mtu:
+    nh_mtu = outbound_interface.HW_MTU
+    ph_mtu = interface.HW_MTU if interface else None
+    if nh_mtu < path_mtu or (ph_mtu and ph_mtu < path_mtu):
+        path_mtu = min(nh_mtu, ph_mtu)
+        clamped_mtu = RNS.Link.signalling_bytes(path_mtu, mode)
+        new_raw = new_raw[:-RNS.Link.LINK_MTU_SIZE] + clamped_mtu
+```
+
+**Impact:** When both endpoints connect via TCP (HW_MTU=8192) through a V3 boundary node (HW_MTU=1064):
+
+1. Sender's `LINKREQUEST` signals 8192-byte link MTU.
+2. V3 forwards the request **unchanged** to the receiver.
+3. Receiver confirms 8192-byte MTU → resource segments sized at ~7500 bytes (6 parts for a 46 KB file).
+4. V3's HDLC deframer buffer (`rxbuf[1064]`) **silently truncates** oversized segments.
+5. Only 4 of 6 truncated segments partially survive → receiver times out waiting for remaining parts → permanent stall at ~70%.
+
+**Symptom:** LXMF resource transfers through the V3 boundary node stall permanently at ~70% progress. The sender keeps retrying but never completes.
+
+### Bug 8b — `TcpInterface` does not declare `FIXED_MTU`
+
+**File:** `TcpInterface.h`, constructor
+
+**Code (before fix):**
+```cpp
+_HW_MTU = TCP_IF_HW_MTU;  // 1064
+// _FIXED_MTU defaults to false
+```
+
+**Impact:** Even if Transport had MTU clamping code, it would skip clamping for this interface because `FIXED_MTU()` returns `false`. The interface's `HW_MTU` value is not treated as authoritative.
+
+### Bug 8c — HDLC deframer silently truncates oversized frames
+
+**File:** `TcpInterface.h`, `_hdlc_deframe()`
+
+**Code (before fix):**
+```cpp
+if (c.rxlen < TCP_IF_HW_MTU) {
+    c.rxbuf[c.rxlen++] = byte;
+}
+// Else: byte silently discarded, truncated frame delivered as if complete
+```
+
+**Impact:** When a client sends a frame larger than `TCP_IF_HW_MTU` (1064 bytes), the deframer silently drops bytes beyond the buffer limit and delivers the truncated frame to Transport as if it were complete. This corrupts resource data segments and hashmap updates, causing the resource transfer protocol to stall.
+
+### Diagnosis
+
+**Serial log evidence (pre-fix):**
+- `LINK-XPORT: FWD` entries show 5 `RESOURCE_DAT` (ctx=1) segments forwarded, each silently truncated to 1064 bytes (from ~7500).
+- After the 5th segment, no more `LINK-XPORT` entries — the receiver's `RESOURCE_HMU` (hashmap update, ctx=4) response is also truncated/corrupted and never processed.
+- Receiver log: `"Timed out waiting for 4 parts, requesting retry"` — retry also stalls.
+
+**Sender log evidence (pre-fix):**
+```
+Signalling link MTU of 8.19 KB for link
+Destination confirmed link MTU of 8.19 KB    ← should have been clamped to 1064
+The transfer of <LXMessage ...> is in progress (70.0%)   ← stuck forever
+```
+
+### Fix
+
+#### 8a — MTU clamping in `Transport.cpp` (3 locations)
+
+Added MTU clamping logic to all three `LINKREQUEST` forwarding paths. When the path MTU in the link request exceeds `min(prev-hop HW_MTU, next-hop HW_MTU)`, the signalling bytes are rewritten using `Link::signalling_bytes()`. If the outbound interface has no MTU or doesn't support MTU configuration, the signalling bytes are stripped entirely.
+
+```cpp
+uint16_t path_mtu = Link::mtu_from_lr_packet(packet);
+if (path_mtu > 0) {
+    uint16_t ph_mtu = packet.receiving_interface().HW_MTU();
+    uint16_t nh_mtu = outbound_interface.HW_MTU();
+    if (nh_mtu == 0) {
+        new_raw = new_raw.left(new_raw.size() - Type::Link::LINK_MTU_SIZE);
+    } else if (!outbound_interface.AUTOCONFIGURE_MTU() && !outbound_interface.FIXED_MTU()) {
+        new_raw = new_raw.left(new_raw.size() - Type::Link::LINK_MTU_SIZE);
+    } else if (nh_mtu < path_mtu || (ph_mtu > 0 && ph_mtu < path_mtu)) {
+        uint16_t clamped = std::min(nh_mtu, (ph_mtu > 0) ? ph_mtu : nh_mtu);
+        auto mode = Link::mode_from_lr_packet(packet);
+        Bytes clamped_mtu_bytes = Link::signalling_bytes(clamped, mode);
+        new_raw = new_raw.left(new_raw.size() - Type::Link::LINK_MTU_SIZE) + clamped_mtu_bytes;
+    }
+}
+```
+
+#### 8b — `FIXED_MTU` in `TcpInterface.h`
+
+Set `_FIXED_MTU = true` in the constructor so Transport uses the interface's `HW_MTU` (1064) for clamping decisions.
+
+#### 8c — Truncation detection in `TcpInterface.h`
+
+Added a `truncated` flag to `TcpClient`. Frames exceeding `TCP_IF_HW_MTU` are now **dropped with a diagnostic log** instead of silently truncated:
+
+```
+[TcpIF] DROPPED oversized frame from client 1 (>1064 bytes, buffered 1064)
+```
+
+### Verification
+
+**Sender log (post-fix):**
+```
+Signalling link MTU of 8.19 KB for link
+Destination confirmed link MTU of 1.06 KB    ← clamped!
+*** DELIVERY RESULT: DELIVERED (state=8) elapsed=2.8s ***
+```
+
+**V3 serial log (post-fix):**
+```
+MTU CLAMP: path=8192 ph=1064 nh=1064 -> clamped=1064
+```
+
+**File integrity:** SHA-256 of received `test.pdf` matches original (`9bcb7b21d2bc7bbf...`).
+
+### Test Reproduction
+
+```bash
+cd test-harnesses/RNodeTHV4
+bash run_test.sh
+```
+
+Sends `test.pdf` (46.1 KB) as an LXMF attachment through the V3 boundary node. Pre-fix: stalls at 70%. Post-fix: delivers in ~3 seconds.
+

@@ -711,6 +711,9 @@ void setup() {
         local_tcp_rns_interface = local_tcp_interface_ptr;
         local_tcp_rns_interface.mode(RNS::Type::Interface::MODE_GATEWAY);
         RNS::Transport::register_interface(local_tcp_rns_interface);
+        // Register as local client interface so Transport forwards
+        // announces, link packets, and proofs to TCP clients
+        RNS::Transport::register_local_client_interface(local_tcp_rns_interface);
 
         {
           char _bm_msg[128];
