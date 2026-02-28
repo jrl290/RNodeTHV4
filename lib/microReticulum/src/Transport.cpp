@@ -2240,25 +2240,19 @@ static bool is_backbone_interface(const Interface& iface) {
 						should_add = true;
 					}
 
-					if (should_add) {
-						// BOUNDARY MODE: Prevent backbone echo from overwriting a local LoRa path
-#ifdef BOUNDARY_MODE
-						{
-							auto existing_iter = _destination_table.find(packet.destination_hash());
-							if (existing_iter != _destination_table.end()) {
-								DestinationEntry& existing = existing_iter->second;
-								Interface existing_iface = existing.receiving_interface();
-								bool existing_is_lora = !is_backbone_interface(existing_iface);
-								bool new_is_backbone = is_backbone_interface(packet.receiving_interface());
-								if (existing_is_lora && new_is_backbone) {
-									DEBUG("BOUNDARY: Blocking backbone announce echo from overwriting local LoRa path for " + packet.destination_hash().toHex()
-										+ " (existing " + std::to_string(existing._hops) + " hops via LoRa, new " + std::to_string(packet.hops()) + " hops via backbone)");
-									should_add = false;
-								}
-							}
-						}
-#endif
-					}
+					// NOTE: The boundary-mode announce echo blocking that was here
+					// has been removed. The standard random_blob check above
+					// already prevents echoes (same blob = same announce bounced
+					// through backbone). Removing the boundary-specific blocking
+					// allows:
+					//  1. Local TCP clients to receive backbone announces for
+					//     destinations that also have LoRa paths.
+					//  2. The V3 destination table to contain the backbone path
+					//     when it is equal-or-better, enabling correct transport
+					//     routing for TCP client LINKREQUESTs.
+					// LoRa-originated announces that arrive first will still be
+					// preferred (equal hops = first-arrival wins via random_blob),
+					// until the next re-announce cycle changes the path.
 
 					if (should_add) {
 						double now = OS::time();
@@ -3747,6 +3741,36 @@ will announce it.
 				);
 				// CBA ACCUMULATES
 				_announce_table.insert({announce_packet.destination_hash(), announce_entry});
+
+				// ESP32 FIX: For requests from local clients, send the
+				// PATH_RESPONSE immediately rather than waiting for the
+				// jobs() loop to process the announce_table entry. On the
+				// ESP32, continuous TCP backbone data can starve the jobs
+				// loop for many seconds, causing path discovery timeouts.
+				if (is_from_local_client) {
+					Identity imm_identity(Identity::recall(announce_packet.destination_hash()));
+					if (imm_identity) {
+						Destination imm_destination(imm_identity, Type::Destination::OUT, Type::Destination::SINGLE, announce_packet.destination_hash());
+						Packet imm_packet(
+							imm_destination,
+							attached_interface,
+							announce_packet.data(),
+							Type::Packet::ANNOUNCE,
+							Type::Packet::PATH_RESPONSE,
+							Type::Transport::TRANSPORT,
+							Type::Packet::HEADER_2,
+							_identity.hash(),
+							true,
+							announce_packet.context_flag()
+						);
+						imm_packet.hops(announce_hops);
+						imm_packet.send();
+						DEBUG("DIAG: PATH-RESP immediate send for " + announce_packet.destination_hash().toHex().substr(0,8) + " hops=" + std::to_string(announce_hops) + " to " + attached_interface.toString());
+
+						// Remove from announce_table since we already sent it
+						_announce_table.erase(announce_packet.destination_hash());
+					}
+				}
 			}
 		}
 	}
