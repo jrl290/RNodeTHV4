@@ -79,7 +79,7 @@ static void config_send_html() {
     int cur_sf        = lora_sf;
     int cur_cr        = lora_cr;
     int cur_txp       = lora_txp;
-    if (cur_txp == 0xFF) cur_txp = 28;  // Default TX power
+    if (cur_txp == 0xFF) cur_txp = PA_MAX_OUTPUT;  // Default to board max
 
     // Default frequency if not set
     if (cur_freq == 0) cur_freq = 914875000;  // 914.875 MHz default

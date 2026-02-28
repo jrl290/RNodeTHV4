@@ -379,6 +379,8 @@
       #define HAS_BUSY true
       #define DIO2_AS_RF_SWITCH true
 
+      #define PA_MAX_OUTPUT  22
+
       // Following pins are for the SX1262
       const int pin_cs = 8;
       const int pin_busy = 13;
@@ -933,6 +935,10 @@
   // in board configuration
   #ifndef OCP_TUNED
     #define OCP_TUNED 0x18
+  #endif
+
+  #ifndef PA_MAX_OUTPUT
+    #define PA_MAX_OUTPUT 20
   #endif
 
   #ifndef NP_M
