@@ -5,8 +5,9 @@ RNodeTHV4 Flash Utility
 Flash the RNodeTHV4 boundary node firmware to a Heltec WiFi LoRa 32 V3 or V4.
 No PlatformIO required — just Python 3 and a USB cable.
 
-Default mode flashes only the app partition (0x10000), preserving
-bootloader, partition table, NVS, and EEPROM settings.
+By default, downloads the latest firmware from GitHub Releases (if newer than
+the local cache) and flashes the app partition only, preserving bootloader,
+partition table, NVS, and EEPROM settings.
 
 Usage:
     # Update firmware — V4 (default)
@@ -15,17 +16,20 @@ Usage:
     # Update firmware — V3
     python flash.py --board v3
 
+    # Flash a specific release version
+    python flash.py --release v1.0.12
+
     # Full flash with merged binary (overwrites everything)
     python flash.py --full
 
     # Flash a specific file (auto-detects merged vs app-only)
     python flash.py --file firmware.bin
 
-    # Download latest from GitHub and flash
-    python flash.py --download
-
     # Specify serial port manually
     python flash.py --port /dev/ttyACM0
+
+    # Skip online check — use cached/local firmware only
+    python flash.py --offline
 
     # Just build the merged binary (for GitHub Releases)
     python flash.py --merge-only
@@ -43,6 +47,7 @@ import time
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 
+VERSION         = "1.0.13"
 CHIP            = "esp32s3"
 FLASH_MODE      = "qio"
 FLASH_FREQ      = "80m"
@@ -358,47 +363,156 @@ def sha256_file(path):
     return h.hexdigest()
 
 
-def download_firmware(dest_path):
-    """Download the latest merged firmware from GitHub Releases."""
+def _cache_dir():
+    """Return the firmware cache directory (next to flash.py)."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), ".firmware_cache")
+
+
+def _cache_meta_path(board_key):
+    """Return path to the cache metadata JSON for a given board."""
+    return os.path.join(_cache_dir(), board_key, "meta.json")
+
+
+def _cached_firmware_path(board_key):
+    """Return path to the cached firmware binary for a given board."""
+    return os.path.join(_cache_dir(), board_key, BOARD_PROFILES[board_key]["merged_filename"])
+
+
+def _read_cache_meta(board_key):
+    """Read cache metadata, returning dict or None if not cached."""
+    import json
+    meta_path = _cache_meta_path(board_key)
+    if os.path.isfile(meta_path):
+        try:
+            with open(meta_path) as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return None
+
+
+def _write_cache_meta(board_key, tag, sha256):
+    """Write cache metadata after a successful download."""
+    import json
+    cache = os.path.join(_cache_dir(), board_key)
+    os.makedirs(cache, exist_ok=True)
+    meta = {"tag": tag, "sha256": sha256}
+    with open(_cache_meta_path(board_key), "w") as f:
+        json.dump(meta, f, indent=2)
+
+
+def _parse_version_tag(tag):
+    """Parse a version tag like 'v1.0.13' into a tuple (1, 0, 13) for comparison.
+    Returns None if the tag doesn't match the expected format."""
+    import re
+    m = re.match(r"v?(\d+)\.(\d+)\.(\d+)", tag)
+    if m:
+        return tuple(int(x) for x in m.groups())
+    return None
+
+
+def _fetch_release_info(tag=None):
+    """Fetch release info from GitHub. If tag is None, fetches latest."""
     try:
-        from urllib.request import urlretrieve, urlopen
+        from urllib.request import urlopen, Request
         import json
     except ImportError:
-        print("Error: Python urllib not available.")
-        return False
+        return None, "Python urllib not available"
 
-    api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-    print(f"Checking latest release from {GITHUB_REPO}...")
+    if tag:
+        # Normalize: ensure tag starts with 'v'
+        if not tag.startswith("v"):
+            tag = f"v{tag}"
+        api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/tags/{tag}"
+    else:
+        api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
     try:
-        with urlopen(api_url) as resp:
-            release = json.loads(resp.read())
+        req = Request(api_url, headers={"Accept": "application/vnd.github+json"})
+        with urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read()), None
     except Exception as e:
-        print(f"Error fetching release info: {e}")
-        return False
+        return None, str(e)
 
-    # Find the merged firmware asset
+
+def fetch_firmware(board_key, release_tag=None):
+    """Fetch firmware from GitHub, using cache when possible.
+
+    Logic:
+      1. Query GitHub for the target release (latest or specific tag).
+      2. If the cached firmware matches that release tag, skip download.
+      3. Otherwise download the merged firmware binary and update cache.
+
+    Returns (firmware_path, release_tag) on success, (None, reason) on failure.
+    """
+    from urllib.request import urlretrieve
+
+    merged_name = BOARD_PROFILES[board_key]["merged_filename"]
+    cache_path = _cached_firmware_path(board_key)
+    cache_meta = _read_cache_meta(board_key)
+
+    # 1. Fetch release info
+    label = f"release {release_tag}" if release_tag else "latest release"
+    print(f"Checking {label} from {GITHUB_REPO}...")
+    release, err = _fetch_release_info(release_tag)
+    if not release:
+        print(f"  Could not reach GitHub: {err}")
+        # Fall back to cache if available
+        if cache_meta and os.path.isfile(cache_path):
+            print(f"  Using cached firmware: {cache_meta['tag']}")
+            return cache_path, cache_meta["tag"]
+        return None, f"No cached firmware and GitHub unreachable: {err}"
+
+    remote_tag = release.get("tag_name", "unknown")
+
+    # 2. Check cache
+    if cache_meta and os.path.isfile(cache_path):
+        cached_tag = cache_meta.get("tag")
+        if cached_tag == remote_tag:
+            # Verify file integrity
+            actual_sha = sha256_file(cache_path)
+            if actual_sha == cache_meta.get("sha256"):
+                print(f"  Cached firmware is up-to-date: {remote_tag}")
+                return cache_path, remote_tag
+            else:
+                print(f"  Cache integrity mismatch — re-downloading")
+        else:
+            cached_ver = _parse_version_tag(cached_tag) if cached_tag else None
+            remote_ver = _parse_version_tag(remote_tag)
+            if cached_ver and remote_ver and remote_ver > cached_ver:
+                print(f"  Newer version available: {cached_tag} → {remote_tag}")
+            elif cached_ver and remote_ver and remote_ver < cached_ver:
+                print(f"  Requested version {remote_tag} is older than cached {cached_tag}")
+            else:
+                print(f"  Version changed: {cached_tag} → {remote_tag}")
+
+    # 3. Find the asset URL
     asset_url = None
     for asset in release.get("assets", []):
-        if asset["name"] == MERGED_FILENAME():
+        if asset["name"] == merged_name:
             asset_url = asset["browser_download_url"]
             break
 
     if not asset_url:
-        print(f"Error: '{MERGED_FILENAME()}' not found in latest release ({release.get('tag_name', '?')}).")
-        print("Available assets:", [a["name"] for a in release.get("assets", [])])
-        return False
+        available = [a["name"] for a in release.get("assets", [])]
+        return None, (
+            f"'{merged_name}' not found in release {remote_tag}.\n"
+            f"  Available assets: {available}"
+        )
 
-    print(f"Downloading {release['tag_name']} / {MERGED_FILENAME()}...")
+    # 4. Download
+    os.makedirs(os.path.join(_cache_dir(), board_key), exist_ok=True)
+    print(f"  Downloading {remote_tag} / {merged_name}...")
     try:
-        urlretrieve(asset_url, dest_path)
+        urlretrieve(asset_url, cache_path)
     except Exception as e:
-        print(f"Download failed: {e}")
-        return False
+        return None, f"Download failed: {e}"
 
-    size = os.path.getsize(dest_path)
-    print(f"Downloaded {size:,} bytes  SHA-256: {sha256_file(dest_path)[:16]}...")
-    return True
+    file_sha = sha256_file(cache_path)
+    file_size = os.path.getsize(cache_path)
+    _write_cache_meta(board_key, remote_tag, file_sha)
+    print(f"  Downloaded {file_size:,} bytes  SHA-256: {file_sha[:16]}...")
+    return cache_path, remote_tag
 
 
 def _do_merge(output_path, esptool_cmd, bootloader, partitions, boot_app0, firmware):
@@ -573,10 +687,11 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python flash.py                         # App-only update, V4 (default)
-  python flash.py --board v3              # App-only update, V3
+  python flash.py                         # Download latest & app-only update (V4)
+  python flash.py --board v3              # Download latest & app-only update (V3)
+  python flash.py --release v1.0.12       # Flash a specific release version
   python flash.py --full                  # Full flash with merged binary
-  python flash.py --download              # Download latest release and flash
+  python flash.py --offline               # Use cached/local firmware only
   python flash.py --file firmware.bin     # Flash a specific file
   python flash.py --merge-only            # Build merged binary for release
   python flash.py --port /dev/ttyACM0     # Specify serial port
@@ -589,8 +704,10 @@ Examples:
     parser.add_argument("--file", "-f", help="Path to firmware binary to flash")
     parser.add_argument("--port", "-p", help="Serial port (auto-detected if omitted)")
     parser.add_argument("--baud", "-b", default=None, help="Baud rate (board-specific default)")
-    parser.add_argument("--download", "-d", action="store_true",
-                        help="Download latest firmware from GitHub Releases")
+    parser.add_argument("--release", "-r", default=None, metavar="TAG",
+                        help="Flash a specific release version (e.g. v1.0.12)")
+    parser.add_argument("--offline", action="store_true",
+                        help="Skip online check — use cached or local firmware only")
     parser.add_argument("--merge-only", action="store_true",
                         help="Merge PlatformIO build output into single binary, don't flash")
     parser.add_argument("--full", action="store_true",
@@ -669,11 +786,6 @@ Examples:
             print(f"Error: file not found: {firmware_path}")
             sys.exit(1)
 
-    elif args.download:
-        firmware_path = merged_fn
-        if not download_firmware(firmware_path):
-            sys.exit(1)
-
     elif args.merge_only:
         if merge_firmware(merged_fn, esptool_cmd):
             print(f"\nDone! Flash with:  python flash.py --board {_board} --file {merged_fn}")
@@ -681,10 +793,9 @@ Examples:
             sys.exit(1)
         return
 
-    elif args.full:
-        # Full flash: use or create merged binary
+    elif args.full and not args.release and args.offline:
+        # Full flash, offline: use local PIO build or existing merged binary
         if os.path.isfile(firmware_bin):
-            # Build exists — (re-)merge
             if os.path.isfile(merged_fn):
                 build_time = os.path.getmtime(firmware_bin)
                 merge_time = os.path.getmtime(merged_fn)
@@ -700,32 +811,57 @@ Examples:
         elif os.path.isfile(merged_fn):
             firmware_path = merged_fn
         else:
-            print("No firmware found for full flash!")
-            print()
-            print("Options:")
-            print(f"  1. Build with PlatformIO first:  pio run -e {pio_env}")
-            print(f"  2. Download from GitHub:         python flash.py --board {_board} --download")
-            print(f"  3. Specify a file:               python flash.py --board {_board} --file <path>")
-            sys.exit(1)
+            # Try cache
+            cached = _cached_firmware_path(_board)
+            if os.path.isfile(cached):
+                firmware_path = cached
+                meta = _read_cache_meta(_board)
+                print(f"Using cached firmware: {meta.get('tag', '?') if meta else '?'}")
+            else:
+                print("No firmware found for full flash!")
+                print()
+                print("Options:")
+                print(f"  1. Build with PlatformIO first:  pio run -e {pio_env}")
+                print(f"  2. Run without --offline to download from GitHub")
+                print(f"  3. Specify a file:               python flash.py --board {_board} --file <path>")
+                sys.exit(1)
 
     else:
-        # Default: app-only flash (preserves settings)
-        if os.path.isfile(firmware_bin):
-            firmware_path = firmware_bin
+        # Default path: fetch from GitHub (unless --offline)
+        if not args.offline:
+            fw_path, tag_or_err = fetch_firmware(_board, release_tag=args.release)
+            if fw_path:
+                firmware_path = fw_path
+                print(f"\n  Release: {tag_or_err}")
+            else:
+                print(f"\n  GitHub: {tag_or_err}")
+                print("  Falling back to local firmware...")
+
+        # Fall back to local PIO build output or cache
+        if not firmware_path:
+            if os.path.isfile(firmware_bin):
+                firmware_path = firmware_bin
+                print(f"Using local PlatformIO build: {firmware_bin}")
+            else:
+                cached = _cached_firmware_path(_board)
+                if os.path.isfile(cached):
+                    firmware_path = cached
+                    meta = _read_cache_meta(_board)
+                    print(f"Using cached firmware: {meta.get('tag', '?') if meta else '?'}")
+                elif os.path.isfile(merged_fn):
+                    firmware_path = merged_fn
+                    print(f"Using local merged binary: {merged_fn}")
+                else:
+                    print("No firmware found!")
+                    print()
+                    print("Options:")
+                    print(f"  1. Build with PlatformIO first:  pio run -e {pio_env}")
+                    print(f"  2. Specify a file:               python flash.py --board {_board} --file <path>")
+                    sys.exit(1)
+
+        if not args.full:
             print(f"App-only update (preserves WiFi/boundary settings)")
             print(f"  Use --full for a complete flash, or --erase for recovery.")
-        elif os.path.isfile(merged_fn):
-            firmware_path = merged_fn
-            print(f"No build output found, using merged binary: {merged_fn}")
-            print(f"  Note: merged binary will overwrite bootloader + partitions.")
-        else:
-            print("No firmware found!")
-            print()
-            print("Options:")
-            print(f"  1. Build with PlatformIO first:  pio run -e {pio_env}")
-            print(f"  2. Download from GitHub:         python flash.py --board {_board} --download")
-            print(f"  3. Specify a file:               python flash.py --board {_board} --file <path>")
-            sys.exit(1)
 
     # Flash — reuse early-detected port if available
     port = args.port or _early_port or find_serial_port()

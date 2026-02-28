@@ -3,6 +3,8 @@
 *.pyc
 TODO
 rnodethv4_firmware.bin
+rnodethv3_firmware.bin
+.firmware_cache/
 Release/*.hex
 Release/*.zip
 Release/*.json
