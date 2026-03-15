@@ -2,6 +2,8 @@
 
 A custom firmware for the **Heltec WiFi LoRa 32 V4** (ESP32-S3 + SX1262) that operates as a **Transport Node** — bridging a local LoRa radio network with a remote TCP/IP backbone (such as [rmap.world](https://rmap.world)) over WiFi.
 
+This project was primarily developed with the use of AI assistance.
+
 ```
   Android / Sideband                                             Remote
   ┌──────────┐          ┌────────────┐                         Reticulum
