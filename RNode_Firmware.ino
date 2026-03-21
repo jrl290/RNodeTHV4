@@ -259,6 +259,13 @@ RTC_NOINIT_ATTR uint32_t boundary_skip_config;
 RTC_NOINIT_ATTR uint32_t bootloop_magic;
 RTC_NOINIT_ATTR uint32_t bootloop_count;
 RTC_NOINIT_ATTR uint32_t bootloop_first_boot_ms;
+
+// Node public hash — cached in RTC so the config portal can display it without
+// needing to start RNS.  Populated after the transport destination is created
+// on a normal boot; survives software reboots into the captive portal.
+#define NODE_HASH_RTC_MAGIC  0x504B4841UL  // "PKHA"
+RTC_NOINIT_ATTR uint32_t rtc_node_hash_magic;
+RTC_NOINIT_ATTR char     rtc_node_hash_hex[33];  // 32 hex chars + NUL
 #endif
 
 #endif  // HAS_RNS
@@ -926,6 +933,17 @@ void setup() {
       RNS::Destination destination(identity, RNS::Type::Destination::IN, RNS::Type::Destination::SINGLE, "rnstransport", "local");
 */
       RNS::Destination destination(RNS::Transport::identity(), RNS::Type::Destination::IN, RNS::Type::Destination::SINGLE, "rnstransport", "local");
+
+      // Cache this node's destination hash in RTC memory so the captive-portal
+      // config page can show it without needing RNS to be running.
+      {
+        std::string h = destination.hash().toHex();
+        size_t len = h.length();
+        if (len > 32) len = 32;
+        memcpy(rtc_node_hash_hex, h.c_str(), len);
+        rtc_node_hash_hex[len] = '\0';
+        rtc_node_hash_magic = NODE_HASH_RTC_MAGIC;
+      }
 
       HEAD("RNS is READY!", RNS::LOG_TRACE);
 #ifdef BOUNDARY_MODE

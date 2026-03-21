@@ -24,6 +24,11 @@
 #include <WebServer.h>
 #include <DNSServer.h>
 
+// ─── Node hash (cached in RTC by normal boot, read here without starting RNS) ─
+#define NODE_HASH_RTC_MAGIC  0x504B4841UL
+extern uint32_t rtc_node_hash_magic;
+extern char     rtc_node_hash_hex[33];
+
 // ─── Config Portal State ─────────────────────────────────────────────────────
 static bool config_portal_active = false;
 static WebServer* config_server = nullptr;
@@ -126,12 +131,25 @@ static void config_send_html() {
         "button:hover{background:#c73e54;}"
         ".ok{background:#16213e;padding:20px;border-radius:8px;text-align:center;}"
         ".ok h1{color:#0f0;}"
+        ".node-hash{background:#0f1a30;border:1px solid #0f3460;border-radius:6px;"
+        "padding:10px 14px;margin:0 0 16px;}"
+        ".node-hash .nh-label{display:block;font-size:0.75em;color:#888;margin-bottom:4px;}"
+        ".node-hash code{font-family:monospace;font-size:0.95em;color:#7ecfff;"
+        "word-break:break-all;letter-spacing:0.05em;}"
         "</style></head><body>"
         "<h1>&#x1f4e1; RNode Boundary Node</h1>"
-        "<form method='POST' action='/save'>"
     );
 
-    // ── WiFi STA Section ──
+    // ── Node public hash ──
+    html += F("<div class='node-hash'><span class='nh-label'>&#x1f511; Node Hash (Reticulum destination)</span><code>");
+    if (rtc_node_hash_magic == NODE_HASH_RTC_MAGIC && rtc_node_hash_hex[0] != '\0') {
+        html += String(rtc_node_hash_hex);
+    } else {
+        html += F("<span style='color:#888;font-style:italic;'>Not yet assigned &mdash; will be set on first normal boot</span>");
+    }
+    html += F("</code></div>");
+
+    html += F("<form method='POST' action='/save'>");
     html += F(
         "<h2>&#x1f4f6; WiFi Network</h2>"
         "<label>WiFi</label>"
