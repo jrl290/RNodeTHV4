@@ -35,6 +35,7 @@
 #include "BoundaryMode.h"
 #include "TcpInterface.h"
 #include "BoundaryConfig.h"
+#include "Advertise.h"
 #include "esp_bt.h"
 #endif
 
@@ -944,6 +945,16 @@ void setup() {
         rtc_node_hash_hex[len] = '\0';
         rtc_node_hash_magic = NODE_HASH_RTC_MAGIC;
       }
+
+#ifdef BOUNDARY_MODE
+      // Initialise the Reticulum interface-discovery announcer. Per the
+      // Reticulum manual (https://reticulum.network/manual/interfaces.html)
+      // this announces this node and its parameters on the network so that
+      // maps such as rmap.world can automatically place a pin for it. The
+      // announcer is a no-op until the user has enabled "Advertise Device"
+      // in the captive-portal configuration.
+      advertise_init();
+#endif
 
       HEAD("RNS is READY!", RNS::LOG_TRACE);
 #ifdef BOUNDARY_MODE
@@ -2420,6 +2431,14 @@ void loop() {
   if (reticulum) {
 	  reticulum.loop();
   }
+
+#ifdef BOUNDARY_MODE
+  // Periodic interface-discovery announcer (Reticulum manual §Interfaces).
+  // No-op until Reticulum is up and the user has enabled "Advertise Device".
+  if (reticulum) {
+    advertise_loop();
+  }
+#endif
 
 #ifdef BOUNDARY_MODE
   // ── Clear bootloop counter once we reach a stable loop iteration ──────────
