@@ -161,6 +161,17 @@ The web form has four sections:
 | **Coding Rate** | 4/5 – 4/8 |
 | **TX Power** | 2 – 28 dBm |
 
+#### 📍 Device Advertisement
+Optional: announce this node and its parameters on the Reticulum network so external maps such as [rmap.world](https://rmap.world) can automatically place a pin for it. **Disabled by default** — only enable if you want this node to be publicly listed.
+
+| Field | Description |
+|-------|-------------|
+| **Advertise Device** | Enable/Disable advertising this node's parameters |
+| **Latitude** | GPS latitude in decimal degrees (e.g. `37.774929`). North positive, South negative. Leave blank to omit |
+| **Longitude** | GPS longitude in decimal degrees (e.g. `-122.419416`). East positive, West negative. Leave blank to omit |
+| **Use Browser Location** | Button that fills the latitude/longitude fields from the browser's geolocation service (requires user permission; some browsers block it on plain HTTP origins) |
+| **Randomize Offset** | When enabled, the advertised coordinates are shifted by a random offset of approximately half a kilometre (about half a mile) for privacy. The exact stored coordinates are not changed |
+
 After saving, the device reboots with the new configuration applied.
 
 ## OLED Display Layout
