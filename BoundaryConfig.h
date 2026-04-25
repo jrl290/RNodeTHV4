@@ -322,6 +322,96 @@ static void config_send_html() {
     html += String(boundary_state.ifac_passphrase);
     html += F("'>");
 
+    // ── Device Advertisement Section ──
+    html += F(
+        "<h2>&#x1f4cd; Device Advertisement</h2>"
+        "<p class='note'>Advertise this node and its parameters on the Reticulum network. "
+        "Maps such as <a href='https://rmap.world' target='_blank' style='color:#7ecfff'>rmap.world</a> "
+        "use these announcements to automatically place a pin for the node. "
+        "Disabled by default; enable only if you want this node to be publicly listed.</p>"
+        "<label>Advertise Device</label>"
+        "<select name='advert_en'>"
+    );
+    html += F("<option value='0'");
+    if (!boundary_state.advert_enabled) html += F(" selected");
+    html += F(">Disabled</option>");
+    html += F("<option value='1'");
+    if (boundary_state.advert_enabled) html += F(" selected");
+    html += F(">Enabled</option>");
+    html += F("</select>");
+
+    // Latitude / Longitude — pre-populate with current values, but keep
+    // the inputs blank when the user has not yet set coordinates so the
+    // browser placeholder hint is visible.
+    char lat_str[32];
+    char lon_str[32];
+    lat_str[0] = '\0';
+    lon_str[0] = '\0';
+    if (boundary_state.advert_enabled ||
+        boundary_state.advert_lat != 0.0 ||
+        boundary_state.advert_lon != 0.0) {
+        dtostrf(boundary_state.advert_lat, 1, 6, lat_str);
+        dtostrf(boundary_state.advert_lon, 1, 6, lon_str);
+    }
+
+    html += F("<div class='row'>");
+    html += F("<div><label>Latitude (&deg;)</label>");
+    html += F("<input id='advert_lat' name='advert_lat' type='text' inputmode='decimal' "
+              "placeholder='e.g. 37.774929' value='");
+    html += String(lat_str);
+    html += F("'></div>");
+    html += F("<div><label>Longitude (&deg;)</label>");
+    html += F("<input id='advert_lon' name='advert_lon' type='text' inputmode='decimal' "
+              "placeholder='e.g. -122.419416' value='");
+    html += String(lon_str);
+    html += F("'></div>");
+    html += F("</div>");
+    html += F("<p class='note'>Decimal degrees, signed. North/East positive, South/West negative. "
+              "Leave both blank to omit coordinates.</p>");
+
+    // Browser geolocation helper button. Geolocation may be blocked on
+    // plain HTTP origins by some browsers; the script reports an error
+    // inline if the request fails or is denied.
+    html += F(
+        "<button type='button' id='geo_btn' "
+        "style='width:100%;padding:10px;margin:4px 0 6px;background:#0f3460;"
+        "color:#fff;border:none;border-radius:4px;font-size:0.95em;cursor:pointer;'>"
+        "&#x1f4cd; Use Browser Location</button>"
+        "<p id='geo_status' class='note' style='min-height:1em;'></p>"
+        "<script>"
+        "(function(){"
+        "var btn=document.getElementById('geo_btn');"
+        "var st=document.getElementById('geo_status');"
+        "if(!btn)return;"
+        "btn.addEventListener('click',function(){"
+        "if(!('geolocation' in navigator)){"
+        "st.textContent='Geolocation not supported by this browser.';return;}"
+        "st.textContent='Requesting location\\u2026';"
+        "navigator.geolocation.getCurrentPosition(function(pos){"
+        "document.getElementById('advert_lat').value=pos.coords.latitude.toFixed(6);"
+        "document.getElementById('advert_lon').value=pos.coords.longitude.toFixed(6);"
+        "st.textContent='Location filled (\\u00b1'+Math.round(pos.coords.accuracy)+' m).';"
+        "},function(err){"
+        "st.textContent='Could not get location: '+err.message;"
+        "},{enableHighAccuracy:true,timeout:15000,maximumAge:0});"
+        "});"
+        "})();"
+        "</script>"
+    );
+
+    html += F("<label>Randomize Offset</label>"
+              "<select name='advert_jitter'>");
+    html += F("<option value='0'");
+    if (!boundary_state.advert_jitter) html += F(" selected");
+    html += F(">Disabled</option>");
+    html += F("<option value='1'");
+    if (boundary_state.advert_jitter) html += F(" selected");
+    html += F(">Enabled (~0.5 km / 0.5 mi)</option>");
+    html += F("</select>");
+    html += F("<p class='note'>When enabled, the advertised coordinates are shifted by a "
+              "random offset of approximately half a kilometre (about half a mile) for "
+              "privacy. The exact stored coordinates are not changed.</p>");
+
     // ── Options Section ──
     html += F(
         "<h2>&#x2699; Options</h2>"
@@ -472,6 +562,37 @@ static void config_handle_save() {
         boundary_state.ifac_passphrase[0] == '\0') {
         boundary_state.ifac_enabled = false;
     }
+
+    // ── Device advertisement settings ──
+    boundary_state.advert_enabled = (config_server->arg("advert_en").toInt() == 1);
+
+    // Empty lat/lon strings are treated as "not set" → 0.0. Otherwise parse
+    // and clamp to valid ranges; out-of-range values are silently coerced
+    // to 0.0 rather than rejecting the whole save.
+    String lat_arg = config_server->arg("advert_lat");
+    String lon_arg = config_server->arg("advert_lon");
+    lat_arg.trim();
+    lon_arg.trim();
+    if (lat_arg.length() == 0) {
+        boundary_state.advert_lat = 0.0;
+    } else {
+        double lat_val = lat_arg.toDouble();
+        if (lat_val < -90.0 || lat_val > 90.0 || isnan(lat_val)) {
+            lat_val = 0.0;
+        }
+        boundary_state.advert_lat = lat_val;
+    }
+    if (lon_arg.length() == 0) {
+        boundary_state.advert_lon = 0.0;
+    } else {
+        double lon_val = lon_arg.toDouble();
+        if (lon_val < -180.0 || lon_val > 180.0 || isnan(lon_val)) {
+            lon_val = 0.0;
+        }
+        boundary_state.advert_lon = lon_val;
+    }
+
+    boundary_state.advert_jitter = (config_server->arg("advert_jitter").toInt() == 1);
 
     // Save boundary config to EEPROM
     boundary_save_config();

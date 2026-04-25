@@ -161,6 +161,27 @@ The web form has four sections:
 | **Coding Rate** | 4/5 – 4/8 |
 | **TX Power** | 2 – 28 dBm |
 
+#### 📍 Device Advertisement
+Optional: announce this node and its parameters on the Reticulum network so external maps such as [rmap.world](https://rmap.world) can automatically place a pin for it. **Disabled by default** — only enable if you want this node to be publicly listed.
+
+When enabled, the firmware periodically (~every 6 hours, matching the Reticulum default) emits an interface-discovery announce as described in the [Reticulum manual](https://reticulum.network/manual/interfaces.html). The announce is sent on the destination `rnstransport.discovery.interface` and contains:
+
+- Interface type (`RNodeInterface`) and the node's transport-identity hash
+- Discovery name (`RTNode-<short-hash>`)
+- Latitude, longitude and height (decimal degrees / metres)
+- Operating LoRa parameters (frequency, bandwidth, spreading factor, coding rate)
+- IFAC network name and key, when configured
+
+The payload is sealed with an LXMF proof-of-work stamp (cost 14, matching `RNS/Discovery.py`'s `DEFAULT_STAMP_VALUE`), and the resulting stamp is cached so the proof-of-work only re-runs when the advertised parameters change.
+
+| Field | Description |
+|-------|-------------|
+| **Advertise Device** | Enable/Disable advertising this node's parameters |
+| **Latitude** | GPS latitude in decimal degrees (e.g. `37.774929`). North positive, South negative. Leave blank to omit |
+| **Longitude** | GPS longitude in decimal degrees (e.g. `-122.419416`). East positive, West negative. Leave blank to omit |
+| **Use Browser Location** | Button that fills the latitude/longitude fields from the browser's geolocation service (requires user permission; some browsers block it on plain HTTP origins) |
+| **Randomize Offset** | When enabled, the *advertised* coordinates are shifted by a deterministic per-device offset of approximately half a kilometre (about half a mile) for privacy. The exact stored coordinates are not changed, and the offset is stable across announces so the pin doesn't move around |
+
 After saving, the device reboots with the new configuration applied.
 
 ## OLED Display Layout
