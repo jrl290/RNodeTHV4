@@ -189,8 +189,9 @@ inline bool boundary_read_double(int addr, double& out) {
     }
     if (all_ff) return false;
     memcpy(&out, buf, sizeof(out));
-    // Reject NaN / inf values that may slip in from corrupted EEPROM.
-    if (isnan(out) || out > 1e9 || out < -1e9) return false;
+    // Reject NaN / inf values that may slip in from corrupted EEPROM. Range
+    // clamping for valid-but-out-of-range coordinates happens at the call site.
+    if (isnan(out) || isinf(out)) return false;
     return true;
 }
 

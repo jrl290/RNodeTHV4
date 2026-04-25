@@ -194,6 +194,7 @@ static inline void adv_mp_bin(RNS::Bytes& out, const uint8_t* p, size_t len) {
 
 // IEEE-754 binary64, big-endian (msgpack float64, prefix 0xcb).
 static inline void adv_mp_float64(RNS::Bytes& out, double v) {
+    static_assert(sizeof(double) == 8, "msgpack float64 requires IEEE-754 binary64");
     uint8_t buf[8];
     memcpy(buf, &v, 8);
     // Detect host endianness — virtually always little-endian on ESP32.
