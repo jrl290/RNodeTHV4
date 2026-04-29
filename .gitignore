@@ -25,3 +25,4 @@ Console/build
 build/*
 .pio/*
 .vscode/*
+.gitnexus

@@ -70,7 +70,7 @@ static const int BW_OPTIONS_COUNT = sizeof(BW_OPTIONS_HZ) / sizeof(BW_OPTIONS_HZ
 static uint8_t config_default_display_rotation() {
     #if BOARD_MODEL == BOARD_LORA32_V2_1 || BOARD_MODEL == BOARD_TBEAM || BOARD_MODEL == BOARD_RAK4631
     return 0;
-    #elif BOARD_MODEL == BOARD_HELTEC32_V2 || BOARD_MODEL == BOARD_HELTEC32_V3 || BOARD_MODEL == BOARD_HELTEC32_V4 || BOARD_MODEL == BOARD_HELTEC_T114 || BOARD_MODEL == BOARD_TBEAM_S_V1
+    #elif BOARD_MODEL == BOARD_HELTEC32_V2 || BOARD_MODEL == BOARD_HELTEC32_V3 || BOARD_MODEL == BOARD_HELTEC32_V4 || BOARD_MODEL == BOARD_HELTEC_TRACKER || BOARD_MODEL == BOARD_HELTEC_T114 || BOARD_MODEL == BOARD_TBEAM_S_V1
     return 1;
     #else
     return 3;
@@ -779,9 +779,14 @@ void config_portal_start() {
         stat_area.println("");
         stat_area.println("Open browser");
         stat_area.println("http://10.0.0.1");
+        #if BOARD_MODEL == BOARD_HELTEC_TRACKER
+        display.fillScreen(SSD1306_BLACK);
+        display.drawBitmap(8, 0, stat_area.getBuffer(), stat_area.width(), stat_area.height(), SSD1306_WHITE, SSD1306_BLACK);
+        #else
         display.clearDisplay();
         display.drawBitmap(0, 0, stat_area.getBuffer(), stat_area.width(), stat_area.height(), SSD1306_WHITE, SSD1306_BLACK);
         display.display();
+        #endif
     }
     #endif
     // Headless: LED ramp will be driven from the WCC portal loop

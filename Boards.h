@@ -99,10 +99,15 @@
   #define BOARD_HELTEC32_V4   0x3F
   #define MODEL_C8            0xC8 // Heltec Lora32 v3, 850-950 MHz, 28dBm
 
-  #define PRODUCT_HELTEC_T114 0xC2 // Heltec Mesh Node T114
-  #define BOARD_HELTEC_T114   0x3C
-  #define MODEL_C6            0xC6 // Heltec Mesh Node T114, 470-510 MHz
-  #define MODEL_C7            0xC7 // Heltec Mesh Node T114, 863-928 MHz
+  #define PRODUCT_HELTEC_T114    0xC2 // Heltec Mesh Node T114
+  #define BOARD_HELTEC_T114      0x3C
+  #define MODEL_C6               0xC6 // Heltec Mesh Node T114, 470-510 MHz
+  #define MODEL_C7               0xC7 // Heltec Mesh Node T114, 863-928 MHz
+
+  #define PRODUCT_HELTEC_TRACKER 0xC4 // Heltec Wireless Tracker v1.1
+  #define BOARD_HELTEC_TRACKER   0x43
+  #define MODEL_CB               0xCB // Heltec Wireless Tracker, 433/470 MHz
+  #define MODEL_CC               0xCC // Heltec Wireless Tracker, 868/915 MHz
 
   #define PRODUCT_TECHO       0x15 // LilyGO T-Echo devices
   #define BOARD_TECHO         0x44
@@ -167,6 +172,7 @@
   #define HAS_SLEEP false
   #define HAS_LORA_PA false
   #define HAS_LORA_LNA false
+  #define HAS_GNSS false
   #define PIN_DISP_SLEEP -1
   #define VALIDATE_FIRMWARE true
 
@@ -466,6 +472,69 @@
       const int pin_mosi = 10;
       const int pin_miso = 11;
       const int pin_sclk = 9;
+
+    #elif BOARD_MODEL == BOARD_HELTEC_TRACKER
+      #define IS_ESP32S3 true
+      #define HAS_DISPLAY true
+      #define HAS_BLUETOOTH false
+      #ifdef BOUNDARY_MODE
+        #define HAS_BLE false
+      #else
+        #define HAS_BLE true
+      #endif
+      #define HAS_WIFI true
+      #define HAS_PMU true
+      #define HAS_CONSOLE true
+      #define HAS_EEPROM true
+      #define HAS_INPUT true
+      #define HAS_SLEEP true
+      #define HAS_GNSS true
+      #define PIN_WAKEUP GPIO_NUM_0
+      #define WAKEUP_LEVEL 0
+      // VEXT (GPIO3, active LOW) powers TFT and GNSS module
+      #define Vext GPIO_NUM_3
+
+      const int pin_btn_usr1 = 0;
+      const int pin_led_rx = 18;
+      const int pin_led_tx = 18;
+
+      #define MODEM SX1262
+      #define HAS_TCXO true
+      const int pin_tcxo_enable = -1;
+      #define HAS_BUSY true
+      #define DIO2_AS_RF_SWITCH true
+
+      #define PA_MAX_OUTPUT 22
+
+      // SX1262 LoRa (same pins as V3/V4)
+      const int pin_cs    =  8;
+      const int pin_busy  = 13;
+      const int pin_dio   = 14;
+      const int pin_reset = 12;
+      const int pin_mosi  = 10;
+      const int pin_miso  = 11;
+      const int pin_sclk  =  9;
+
+      // ST7735S 0.96" 80×160 TFT (software SPI on dedicated pins)
+      #define TRACKER_TFT_BL   21
+      #define TRACKER_TFT_DC   40
+      #define TRACKER_TFT_CS   38
+      #define TRACKER_TFT_RST  39
+      #define TRACKER_TFT_MOSI 42
+      #define TRACKER_TFT_SCK  41
+
+      const int DISPLAY_BL_PIN = TRACKER_TFT_BL;
+      const int DISPLAY_DC     = TRACKER_TFT_DC;
+      const int DISPLAY_CS     = TRACKER_TFT_CS;
+      const int DISPLAY_RST    = TRACKER_TFT_RST;
+      const int DISPLAY_MOSI   = TRACKER_TFT_MOSI;
+      const int DISPLAY_CLK    = TRACKER_TFT_SCK;
+
+      // UC6580 GNSS (UART2)
+      #define TRACKER_GNSS_TX  33
+      #define TRACKER_GNSS_RX  34
+      #define TRACKER_GNSS_RST 35
+      #define TRACKER_GNSS_PPS 36
 
     #elif BOARD_MODEL == BOARD_RNODE_NG_20
       #define HAS_DISPLAY true

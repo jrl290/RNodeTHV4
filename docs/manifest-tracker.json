@@ -1,0 +1,14 @@
+{
+  "name": "RTNode - Heltec Wireless Tracker v1.1 (Update)",
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        {
+          "path": "firmware/rtnode_heltec_tracker.bin",
+          "offset": 65536
+        }
+      ]
+    }
+  ]
+}

@@ -110,6 +110,22 @@ BOARD_PROFILES = {
             },
         },
     },
+    # Tracker is ESP32-S3FN8 (embedded flash, NO PSRAM) — must use DIO flash mode.
+    # Always select explicitly: python flash.py --board tracker
+    "tracker": {
+        "name":      "Heltec Wireless Tracker v1.1",
+        "chip":      "ESP32-S3",
+        "baud_rate": "921600",
+        "flash_mode": "dio",
+        "flash_variants": {
+            "8MB": {
+                "pio_env":      "rtnode_heltec_tracker",
+                "build_dir":    ".pio/build/rtnode_heltec_tracker",
+                "firmware_bin": "rtnode_heltec_tracker.bin",
+                "merged_bin":   "rtnode_heltec_tracker_merged.bin",
+            },
+        },
+    },
 }
 DEFAULT_BOARD = "v4"
 
@@ -1233,8 +1249,8 @@ Examples:
       Erase flash first, then do a full flash.
         """,
     )
-    parser.add_argument("--board", choices=["v3", "v4"], default=None,
-                        help="Target board: v3 (Heltec V3) or v4 (Heltec V4). "
+    parser.add_argument("--board", choices=["v3", "v4", "tracker"], default=None,
+                        help="Target board: v3 (Heltec V3), v4 (Heltec V4), or tracker (Heltec Wireless Tracker v1.1). "
                              "Auto-detected from connected device if omitted.")
     parser.add_argument("--file", "-f", help="Path to firmware binary to flash")
     parser.add_argument("--port", "-p", help="Serial port (auto-detected if omitted)")

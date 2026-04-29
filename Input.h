@@ -93,7 +93,9 @@
           #if HAS_DISPLAY
           if (disp_ready) {
             display.fillScreen(SSD1306_WHITE);
+            #if BOARD_MODEL != BOARD_HELTEC_TRACKER
             display.display();
+            #endif
           }
           #endif
           headless_led_fast_blink();

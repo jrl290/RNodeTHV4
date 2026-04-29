@@ -312,6 +312,19 @@
     <div class="flash-box">
       <p>Connect your RTNode via USB, then click <strong>Detect</strong> to identify the board automatically.</p>
       <button id="detect-btn" class="flash-btn">Detect</button>
+      <div class="version-row" style="margin-top:0.8rem">
+        <label for="board-override">Board override</label>
+        <select id="board-override">
+          <option value="">Auto-detect</option>
+          <option value="v4">Heltec V4</option>
+          <option value="v3">Heltec V3</option>
+          <option value="tracker">Heltec Wireless Tracker v1.1</option>
+        </select>
+      </div>
+      <p style="font-size:0.8rem;color:var(--muted);margin-top:0.3rem">
+        The Wireless Tracker v1.1 has PSRAM like the V4 and cannot be auto-detected.
+        Select it manually before flashing.
+      </p>
     </div>
   </section>
 
@@ -426,6 +439,13 @@
       updateAddr: 0x10000,
       fullAddr:   0x0,
     },
+    tracker: {
+      label:      'Heltec Wireless Tracker v1.1',
+      updateName: 'rtnode_heltec_tracker.bin',
+      fullName:   'rtnode_heltec_tracker_merged.bin',
+      updateAddr: 0x10000,
+      fullAddr:   0x0,
+    },
   };
 
   function getBinUrl(fw, isUpdate) {
@@ -452,6 +472,9 @@
   })();
 
   // ── Detection — mirrors detect_board() in flash.py ─────────────────────────
+  // NOTE: The Wireless Tracker v1.1 also has PSRAM and appears identical to V4
+  // during detection. Users must manually select "Tracker" from the board menu
+  // if auto-detect picks V4 on a Tracker device.
   function detectBoard(chipName, features) {
     if (chipName.includes('ESP32-S3')) {
       const hasPsram = features.some(f => String(f).toUpperCase().includes('PSRAM'));
@@ -461,9 +484,10 @@
   }
 
   // ── UI refs ────────────────────────────────────────────────────────────────
-  const detectBtn    = document.getElementById('detect-btn');
-  const flashBtn     = document.getElementById('flash-btn');
+  const detectBtn     = document.getElementById('detect-btn');
+  const flashBtn      = document.getElementById('flash-btn');
   const versionSelect = document.getElementById('version-select');
+  const boardOverride = document.getElementById('board-override');
 
   const flashDesc    = document.getElementById('flash-desc');
   const modeUpdate   = document.getElementById('mode-update');
@@ -547,13 +571,14 @@
       const features    = await loader.chip.getChipFeatures(loader);
       const flashSizeKb = await loader.getFlashSize();
       const flashSize   = flashSizeKb >= 1024 ? (flashSizeKb / 1024) + 'MB' : flashSizeKb + 'KB';
-      const boardKey    = detectBoard(chipName, features);
+      const autoKey     = detectBoard(chipName, features);
+      const boardKey    = boardOverride.value || autoKey;
       detectedFw        = FIRMWARE[boardKey];
 
       log(`Chip:       ${chipName}`);
       log(`Features:   ${features.join(', ')}`);
       log(`Flash size: ${flashSize}`);
-      log(`Board:      ${detectedFw.label}`);
+      log(`Board:      ${detectedFw.label}${boardOverride.value ? ' (manually selected)' : ' (auto-detected)'}`);
 
       setBadge('ok', `&#10003; ${detectedFw.label} &mdash; Flash: ${flashSize} &mdash; Ready to flash`);
       flashBtn.disabled = false;

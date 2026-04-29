@@ -22,6 +22,8 @@
   #elif BOARD_MODEL == BOARD_HELTEC_T114
     #include "ST7789.h"
     #define COLOR565(r, g, b) (((r & 0xF8) << 8) | ((g & 0xFC) << 3) | ((b & 0xF8) >> 3))
+  #elif BOARD_MODEL == BOARD_HELTEC_TRACKER
+    #include <Adafruit_ST7735.h>
   #elif BOARD_MODEL == BOARD_TBEAM_S_V1
     #include <Adafruit_SH110X.h>
   #else
@@ -153,6 +155,11 @@ extern BoundaryState boundary_state;
   ST7789Spi display(&SPI1, DISPLAY_RST, DISPLAY_DC, DISPLAY_CS);
   #define SSD1306_WHITE ST77XX_WHITE
   #define SSD1306_BLACK ST77XX_BLACK
+#elif BOARD_MODEL == BOARD_HELTEC_TRACKER
+  // Software SPI on dedicated GPIO-matrix pins, separate from LoRa SPI bus
+  Adafruit_ST7735 display = Adafruit_ST7735(DISPLAY_CS, DISPLAY_DC, DISPLAY_MOSI, DISPLAY_CLK, DISPLAY_RST);
+  #define SSD1306_WHITE ST77XX_WHITE
+  #define SSD1306_BLACK ST77XX_BLACK
 #elif BOARD_MODEL == BOARD_TBEAM_S_V1
   Adafruit_SH1106G display = Adafruit_SH1106G(128, 64, &Wire, -1);
   #define SSD1306_WHITE SH110X_WHITE
@@ -238,6 +245,14 @@ void update_area_positions() {
       p_as_x = 126;
       p_as_y = p_ad_y;
     }
+  #elif BOARD_MODEL == BOARD_HELTEC_TRACKER
+    // 160×80 landscape: two 64×64 canvases side by side, vertically centered (8px top margin)
+    if (disp_mode == DISP_MODE_LANDSCAPE) {
+      p_ad_x = 16;  // disp area: left half (80px) → center 64px → offset 8px, +8px left margin
+      p_ad_y = 8;   // (80-64)/2
+      p_as_x = 80;  // stat area: right half starts at x=80
+      p_as_y = 8;
+    }
   #elif BOARD_MODEL == BOARD_TECHO
     if (disp_mode == DISP_MODE_PORTRAIT) {
       p_ad_x = 61;
@@ -271,6 +286,11 @@ uint8_t display_contrast = 0x00;
   }
 #elif BOARD_MODEL == BOARD_HELTEC_T114
   void set_contrast(ST7789Spi *display, uint8_t value) { }
+#elif BOARD_MODEL == BOARD_HELTEC_TRACKER
+  void set_contrast(Adafruit_ST7735 *display, uint8_t value) {
+    // BL is active HIGH: higher PWM duty = brighter.
+    analogWrite(DISPLAY_BL_PIN, value == 0 ? 0 : map(value, 1, 255, 40, 255));
+  }
 #elif BOARD_MODEL == BOARD_TECHO
   void set_contrast(void *display, uint8_t value) {
     if (value == 0) { analogWrite(pin_backlight, 0); }
@@ -352,6 +372,14 @@ bool display_init() {
     #elif BOARD_MODEL == BOARD_HELTEC_T114
       pinMode(PIN_T114_TFT_EN, OUTPUT);
       digitalWrite(PIN_T114_TFT_EN, LOW);
+    #elif BOARD_MODEL == BOARD_HELTEC_TRACKER
+      // VEXT is active HIGH (GPIO3 HIGH = peripheral power on)
+      pinMode(Vext, OUTPUT);
+      digitalWrite(Vext, HIGH);
+      // BL is active HIGH — claim LEDC channel at a visible duty before any
+      // set_contrast() call can fire and override it.
+      analogWrite(DISPLAY_BL_PIN, 200);
+      delay(50);
     #elif BOARD_MODEL == BOARD_TECHO
       display.init(0, true, 10, false, displaySPI, SPISettings(4000000, MSBFIRST, SPI_MODE0));
       display.setPartialWindow(0, 0, DISP_W, DISP_H);
@@ -418,6 +446,10 @@ bool display_init() {
     // set white as default pixel colour for Heltec T114
     display.setRGB(COLOR565(0xFF, 0xFF, 0xFF));
     if (false) {
+    #elif BOARD_MODEL == BOARD_HELTEC_TRACKER
+    display.initR(INITR_MINI160x80_PLUGIN);  // heltec_tracker uses PLUGIN variant
+    display.fillScreen(SSD1306_BLACK);
+    if (false) {
     #elif BOARD_MODEL == BOARD_TBEAM_S_V1
     if (!display.begin(display_address, true)) {
     #else
@@ -425,7 +457,17 @@ bool display_init() {
     #endif
       return false;
     } else {
-      set_contrast(&display, display_contrast);
+      // Tracker backlight was already set in the VEXT block above;
+      // calling set_contrast(display_contrast=0) here would reset LEDC to 0%.
+      #if BOARD_MODEL != BOARD_HELTEC_TRACKER
+        set_contrast(&display, display_contrast);
+      #endif
+      // Tracker rotation is fixed by hardware; never load a stale NVS value.
+      #if BOARD_MODEL == BOARD_HELTEC_TRACKER
+      disp_mode = DISP_MODE_LANDSCAPE;
+      display.setRotation(3);
+      if (false) {  // structural dummy — balances the closing } of the else block below
+      #else
       if (display_rotation != 0xFF) {
         if (display_rotation == 0 || display_rotation == 2) {
           disp_mode = DISP_MODE_LANDSCAPE;
@@ -434,6 +476,7 @@ bool display_init() {
         }
         display.setRotation(display_rotation);
       } else {
+      #endif
         #if BOARD_MODEL == BOARD_RNODE_NG_20
           disp_mode = DISP_MODE_PORTRAIT;
           display.setRotation(3);
@@ -464,6 +507,9 @@ bool display_init() {
         #elif BOARD_MODEL == BOARD_HELTEC32_V4
           disp_mode = DISP_MODE_PORTRAIT;
           display.setRotation(1);
+        #elif BOARD_MODEL == BOARD_HELTEC_TRACKER
+          disp_mode = DISP_MODE_LANDSCAPE;
+          display.setRotation(3);   // INITR_MINI160x80_PLUGIN: rot3 = 160w × 80h landscape, correct origin
         #elif BOARD_MODEL == BOARD_HELTEC_T114
           disp_mode = DISP_MODE_PORTRAIT;
           display.setRotation(1);
@@ -519,6 +565,15 @@ bool display_init() {
         fillRect(p_as_x, p_as_y, 128, 128, SSD1306_BLACK);
         pinMode(PIN_T114_TFT_BLGT, OUTPUT);
         digitalWrite(PIN_T114_TFT_BLGT, LOW);
+      #elif BOARD_MODEL == BOARD_HELTEC_TRACKER
+        // Fresh EEPROM (erased flash) returns 0 from the NVS layer, which would
+        // call set_contrast(0) and turn the backlight off.  Treat 0 as "not yet
+        // configured" and fall back to full brightness so first boot is visible.
+        if (display_intensity == 0) {
+          display_intensity       = 0xFF;
+          display_unblank_intensity = 0xFF;
+        }
+        set_contrast(&display, display_intensity);
       #endif
 
       return true;
@@ -1257,6 +1312,8 @@ void update_display(bool blank = false) {
       #if BOARD_MODEL == BOARD_HELTEC_T114
         display.clear();
         display.display();
+      #elif BOARD_MODEL == BOARD_HELTEC_TRACKER
+        display.fillScreen(SSD1306_BLACK);
       #elif BOARD_MODEL != BOARD_TDECK && BOARD_MODEL != BOARD_TECHO
         display.clearDisplay();
         display.display();
@@ -1277,6 +1334,8 @@ void update_display(bool blank = false) {
 
       #if BOARD_MODEL == BOARD_HELTEC_T114
         display.clear();
+      #elif BOARD_MODEL == BOARD_HELTEC_TRACKER
+        // drawBitmap is fully opaque; no fill needed — avoids slow full-screen SPI writes
       #elif BOARD_MODEL != BOARD_TDECK && BOARD_MODEL != BOARD_TECHO
         display.clearDisplay();
       #endif
@@ -1302,7 +1361,7 @@ void update_display(bool blank = false) {
           last_epd_refresh = millis();
           epd_blanked = false;
         }
-      #elif BOARD_MODEL != BOARD_TDECK
+      #elif BOARD_MODEL != BOARD_TDECK && BOARD_MODEL != BOARD_HELTEC_TRACKER
         display.display();
       #endif
 
