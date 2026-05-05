@@ -36,6 +36,7 @@
 #include "TcpInterface.h"
 #include "BoundaryConfig.h"
 #include "Advertise.h"
+#include "MdnsService.h"
 #include "esp_bt.h"
 #endif
 
@@ -910,6 +911,10 @@ void setup() {
         if (local_tcp_interface_ptr) {
           local_tcp_interface_ptr->start();
           HEAD("Boundary Mode: Local TCP server started", RNS::LOG_TRACE);
+        }
+        if (wifi_is_connected() && boundary_state.mdns_enabled) {
+          uint16_t advert_port = boundary_state.ap_tcp_enabled ? boundary_state.ap_tcp_port : 0;
+          mdns_service::start_sta_auto(boundary_state.mdns_hostname, advert_port);
         }
       } else if (boundary_state.wifi_enabled) {
         HEAD("Boundary Mode: Waiting for WiFi before starting TCP interfaces", RNS::LOG_WARNING);
@@ -2628,6 +2633,16 @@ void loop() {
 
   #if HAS_WIFI
     if (wifi_initialized) update_wifi();
+    #ifdef BOUNDARY_MODE
+      // Late-start mDNS once WiFi finishes its asynchronous association.
+      // The function early-exits if already running or WiFi is not yet up,
+      // so calling it every loop iteration is cheap.
+      if (!mdns_service::is_running() && wifi_is_connected() &&
+          boundary_state.wifi_enabled && boundary_state.mdns_enabled) {
+        uint16_t advert_port = boundary_state.ap_tcp_enabled ? boundary_state.ap_tcp_port : 0;
+        mdns_service::start_sta_auto(boundary_state.mdns_hostname, advert_port);
+      }
+    #endif
   #endif
 
   #if HAS_INPUT

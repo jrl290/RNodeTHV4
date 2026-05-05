@@ -23,6 +23,7 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <DNSServer.h>
+#include "MdnsService.h"
 
 // ─── Node hash (cached in RTC by normal boot, read here without starting RNS) ─
 #define NODE_HASH_RTC_MAGIC  0x504B4841UL
@@ -161,6 +162,33 @@ static void config_send_html() {
         "<input name='node_name' maxlength='32' placeholder='e.g. My RNode' value='"
     );
     html += String(boundary_state.node_name);
+    html += F("'>");
+
+    // ── mDNS Hostname Section ──
+    html += F(
+        "<h2>&#x1f310; Local Network Name (mDNS)</h2>"
+        "<p class='note'>Publishes the device on the local network so you can reach it as "
+        "<code>&lt;name&gt;.local</code> from any computer in your LAN without knowing its IP. "
+        "Disable to suppress all multicast announcements.</p>"
+        "<label>mDNS</label>"
+        "<select name='mdns_en'>"
+    );
+    html += F("<option value='1'");
+    if (boundary_state.mdns_enabled) html += F(" selected");
+    html += F(">Enabled</option>");
+    html += F("<option value='0'");
+    if (!boundary_state.mdns_enabled) html += F(" selected");
+    html += F(">Disabled</option>");
+    html += F("</select>");
+
+    html += F(
+        "<label>Hostname</label>"
+        "<p class='note'>Leave blank for the default <code>rtnode&lt;XXXX&gt;.local</code> "
+        "(last 4 hex chars of the device MAC). "
+        "Allowed: lowercase letters, digits and hyphens; first/last char must be alphanumeric.</p>"
+        "<input name='mdns_name' maxlength='32' placeholder='rtnode' value='"
+    );
+    html += String(boundary_state.mdns_hostname);
     html += F("'>");
 
     html += F(
@@ -603,6 +631,37 @@ static void config_handle_save() {
     memset(boundary_state.node_name, 0, sizeof(boundary_state.node_name));
     strncpy(boundary_state.node_name, node_name_arg.c_str(), sizeof(boundary_state.node_name) - 1);
 
+    // ── mDNS enable + hostname ──
+    {
+        boundary_state.mdns_enabled = (config_server->arg("mdns_en").toInt() != 0);
+    }
+    // Lowercase, strip whitespace, allow only [a-z0-9-]; reject leading/trailing
+    // hyphens. Empty input falls back to the auto-generated `rtnode<XXXX>` at
+    // mDNS start time.
+    {
+        String mdns_arg = config_server->arg("mdns_name");
+        mdns_arg.trim();
+        mdns_arg.toLowerCase();
+        char clean[33];
+        size_t j = 0;
+        for (size_t i = 0; i < mdns_arg.length() && j < sizeof(clean) - 1; i++) {
+            char c = mdns_arg.charAt(i);
+            if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-') {
+                clean[j++] = c;
+            }
+        }
+        clean[j] = '\0';
+        // Strip leading/trailing hyphens to keep RFC-952-ish compliance.
+        while (j > 0 && clean[j - 1] == '-') clean[--j] = '\0';
+        size_t start = 0;
+        while (clean[start] == '-') start++;
+        memset(boundary_state.mdns_hostname, 0, sizeof(boundary_state.mdns_hostname));
+        if (clean[start] != '\0') {
+            strncpy(boundary_state.mdns_hostname, clean + start,
+                    sizeof(boundary_state.mdns_hostname) - 1);
+        }
+    }
+
     // Save boundary config to EEPROM
     boundary_save_config();
 
@@ -732,6 +791,10 @@ void config_portal_start() {
 
     Serial.println("[Config] Starting configuration portal...");
 
+    // Tear down any STA-mode mDNS before flipping the radio to AP — the
+    // ESPmDNS state must not survive a WiFi mode change.
+    mdns_service::stop();
+
     // Stop any existing WiFi
     WiFi.softAPdisconnect(true);
     WiFi.disconnect(true, true);
@@ -762,6 +825,12 @@ void config_portal_start() {
     config_server->on("/save", HTTP_POST, config_handle_save);
     config_server->onNotFound(config_handle_redirect);  // Captive portal catch-all
     config_server->begin();
+
+    // Publish a stable .local name so users don't need to remember the AP IP.
+    // Captive portal still works via DNSServer for clients without mDNS.
+    if (boundary_state.mdns_enabled) {
+        mdns_service::start_ap_config("rtnode");
+    }
 
     config_portal_active = true;
 
@@ -806,6 +875,8 @@ void config_portal_stop() {
         delete config_dns;
         config_dns = nullptr;
     }
+
+    mdns_service::stop();
 
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_MODE_NULL);

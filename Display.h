@@ -14,6 +14,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 #include "Graphics.h"
+#include "MdnsService.h"
 #include <Adafruit_GFX.h>
 
 #if BOARD_MODEL != BOARD_TECHO
@@ -69,6 +70,10 @@ struct BoundaryState {
     // Airtime / duty-cycle limits as fraction (0.0 = disabled, 0.01 = 1%).
     float    st_airtime_limit; // ~15 second rolling window
     float    lt_airtime_limit; // ~1 hour rolling window
+    // mDNS / Bonjour publishing (default-enabled).
+    bool     mdns_enabled;
+    // Custom mDNS hostname (empty = auto-generated `rtnode<XXXX>`).
+    char     mdns_hostname[33];
     bool     wifi_connected;
     bool     tcp_connected;       // Backbone (WAN) connected
     bool     ap_tcp_connected;    // Local TCP server (LAN) has client
@@ -977,22 +982,50 @@ void draw_disp_area() {
       // 1px separator after SF line
       disp_area.drawLine(0, 34, disp_area.width()-1, 34, SSD1306_WHITE);
 
-      // WiFi IP address
-      disp_area.setCursor(2, 44);
-      if (boundary_state.wifi_connected) {
-        disp_area.print(wr_device_ip);
+      // When mDNS is enabled we show three slightly-tighter rows in the lower
+      // area: hostname, IP, port — and drop the bottom separator line to free
+      // the third row. When mDNS is disabled we keep the original two-row
+      // layout (IP, Port + separator).
+      if (boundary_state.mdns_enabled) {
+        // Row 1: mDNS hostname. Resolve at draw time so the displayed value
+        // matches whatever start_sta_auto() actually published.
+        uint8_t mac[6];
+        WiFi.macAddress(mac);
+        char suffix[5];
+        snprintf(suffix, sizeof(suffix), "%02x%02x", mac[4], mac[5]);
+        char host[33];
+        mdns_service::resolve_hostname(boundary_state.mdns_hostname, suffix,
+                                       host, sizeof(host));
+        disp_area.setCursor(2, 42);
+        disp_area.printf("%s.local", host);
+
+        // Row 2: WiFi IP
+        disp_area.setCursor(2, 52);
+        if (boundary_state.wifi_connected) {
+          disp_area.print(wr_device_ip);
+        } else {
+          disp_area.print("No WiFi");
+        }
+
+        // Row 3: Local TCP server port (shown only when enabled)
+        disp_area.setCursor(2, 62);
+        if (boundary_state.ap_tcp_enabled) {
+          disp_area.printf("Port:%u", boundary_state.ap_tcp_port);
+        }
       } else {
-        disp_area.print("No WiFi");
+        // Original two-row layout — IP, Port, separator.
+        disp_area.setCursor(2, 44);
+        if (boundary_state.wifi_connected) {
+          disp_area.print(wr_device_ip);
+        } else {
+          disp_area.print("No WiFi");
+        }
+        disp_area.setCursor(2, 55);
+        if (boundary_state.ap_tcp_enabled) {
+          disp_area.printf("Port:%u", boundary_state.ap_tcp_port);
+        }
+        disp_area.drawLine(0, 60, disp_area.width()-1, 60, SSD1306_WHITE);
       }
-
-      // Local TCP server port (shown only when enabled)
-      disp_area.setCursor(2, 55);
-      if (boundary_state.ap_tcp_enabled) {
-        disp_area.printf("Port:%u", boundary_state.ap_tcp_port);
-      }
-
-      // 1px separator after Port line
-      disp_area.drawLine(0, 60, disp_area.width()-1, 60, SSD1306_WHITE);
 #else
       if (radio_online && display_diagnostics) {
 #ifdef HAS_RNS

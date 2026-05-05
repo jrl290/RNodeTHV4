@@ -145,11 +145,11 @@ The config portal activates automatically on:
 - **First boot** — when no saved configuration exists
 - **Button hold >5 seconds** — hold the PRG button for 5+ seconds, the device reboots into config mode
 
-When active, the device creates a WiFi access point named **`RNode-Boundary-Setup`** (open network). A captive portal should appear automatically when you connect; if not, browse to `http://192.168.4.1`.
+When active, the device creates a WiFi access point named **`RNode-Boundary-Setup`** (open network). A captive portal should appear automatically when you connect; if not, browse to `http://10.0.0.1` or, on systems with mDNS support, `http://rtnode.local`. (This config-mode hostname is fixed and shared by every device, so it's always the same regardless of how you later name the unit in normal operation.)
 
 ### Config Page Options
 
-The web form has four sections:
+The web form has the following sections:
 
 #### 📶 WiFi Network
 | Field | Description |
@@ -170,6 +170,14 @@ The web form has four sections:
 |-------|-------------|
 | **Local TCP Server** | Enable/Disable — runs a TCP server on your WiFi for local Reticulum nodes to connect |
 | **TCP Port** | Port to listen on (default: `4242`) |
+
+#### 🌐 Local Network Name (mDNS)
+Publishes the device on the local network via mDNS / Bonjour, so it can be reached as `<hostname>.local` from any computer in the same LAN — no IP lookup or DHCP reservation required. The Local TCP Server (if enabled) is also advertised as a `_reticulum._tcp` service for auto-discovery by Reticulum-aware tools.
+
+| Field | Description |
+|-------|-------------|
+| **mDNS** | Enable/Disable — when disabled, the device suppresses all multicast announcements |
+| **Hostname** | Custom hostname (lowercase, digits, hyphens; first/last char must be alphanumeric). Leave blank for the default `rtnode<XXXX>` where `XXXX` is the last 4 hex chars of the device MAC |
 
 #### 📻 LoRa Radio
 | Field | Description |
@@ -228,13 +236,15 @@ The 128×64 OLED is split into two panels:
 
 ```
  ▓▓ RTNode-HV4 ▓▓  ← title bar (inverted)
- 867.200MHz       ← LoRa frequency
- SF7 125k         ← spreading factor & bandwidth
+ 867.200MHz        ← LoRa frequency
+ SF7 125k          ← spreading factor & bandwidth
  ────────────────  ← separator
- 192.168.1.42     ← WiFi IP address (or "No WiFi")
- Port:4242        ← Local TCP server port
- ────────────────  ← separator
+ rtnode.local      ← mDNS hostname (only when mDNS enabled)
+ 192.168.1.42      ← WiFi IP address (or "No WiFi")
+ Port:4242         ← Local TCP server port
 ```
+
+When mDNS is **disabled** in configuration, the hostname row is omitted and a 1-pixel separator is drawn under the Port row instead — preserving the original two-row layout.
 
 - **Port** shows the Local TCP server port (the port local nodes connect to), not the backbone port
 - **Port line is hidden** when the Local TCP Server is disabled
@@ -364,9 +374,11 @@ On your server, configure `rnsd` with a TCP Client Interface:
 [interfaces]
   [[TCP Client to Transport Node]]
     type = TCPClientInterface
-    target_host = <transport-node-ip>
+    target_host = <transport-node-ip-or-mdns-name>
     target_port = 4242
 ```
+
+`target_host` accepts either an IP (e.g. `192.168.1.42`) or, on systems with mDNS support, the device's `.local` name (e.g. `rtnode.local`, or the custom hostname you set in the configuration portal). The mDNS name is the easier choice — it survives DHCP lease changes without a router-side reservation.
 
 Set the transport node's **Local TCP Server** to **Enabled** (port 4242).
 

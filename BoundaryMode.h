@@ -107,7 +107,9 @@
 // budgets (e.g. EU868 = 1.0% long-term).
 #define ADDR_CONF_ST_AL         0x14F // Short-term airtime limit (1 byte, percent * 10)
 #define ADDR_CONF_LT_AL         0x150 // Long-term  airtime limit (1 byte, percent * 10)
-// Total: 0x151 (337 bytes — extends beyond 256-byte CONFIG area into
+#define ADDR_CONF_MDNS_EN       0x151 // mDNS enable flag (1 byte; 0x73 = enabled, 0xFF = unset/default-enabled)
+#define ADDR_CONF_MDNS_NAME     0x152 // Custom mDNS hostname (33 bytes, null-terminated; empty = auto)
+// Total: 0x173 (371 bytes — extends beyond 256-byte CONFIG area into
 //         unused EEPROM gap; safe on ESP32 where EEPROM starts at 824)
 
 #define BOUNDARY_ENABLE_BYTE 0x73
@@ -150,6 +152,14 @@ struct BoundaryState {
     // Mirrored into the global st_airtime_limit / lt_airtime_limit at boot.
     float    st_airtime_limit; // ~15 second rolling window
     float    lt_airtime_limit; // ~1 hour rolling window
+
+    // mDNS / Bonjour service. When disabled, the device publishes nothing on
+    // multicast and is only reachable by IP. Enabled by default.
+    bool     mdns_enabled;
+    // Custom mDNS hostname. Empty string = auto-generated `rtnode<XXXX>` from
+    // the last 4 hex chars of the device MAC. Validated to RFC-952 plus
+    // hyphen/digit at save time.
+    char     mdns_hostname[33];
 
     // Runtime state
     bool     wifi_connected;
@@ -237,6 +247,8 @@ inline void boundary_load_config() {
         boundary_state.advert_lon = 0.0;
         boundary_state.advert_jitter = false;
         boundary_state.node_name[0] = '\0';
+        boundary_state.mdns_enabled = true;
+        boundary_state.mdns_hostname[0] = '\0';
         boundary_state.st_airtime_limit = 0.0f;
         boundary_state.lt_airtime_limit = 0.0f;
         st_airtime_limit = 0.0f;
@@ -362,6 +374,20 @@ inline void boundary_load_config() {
         lt_airtime_limit = boundary_state.lt_airtime_limit;
     }
 
+    // mDNS enable flag — enabled unless explicitly disabled (0xFF = unset = enabled).
+    {
+        uint8_t mdns_en_byte = EEPROM.read(config_addr(ADDR_CONF_MDNS_EN));
+        boundary_state.mdns_enabled =
+            (mdns_en_byte == BOUNDARY_ENABLE_BYTE || mdns_en_byte == 0xFF);
+    }
+
+    // Custom mDNS hostname (33 bytes, null-terminated; 0xFF = unset = empty).
+    for (int i = 0; i < 32; i++) {
+        boundary_state.mdns_hostname[i] = EEPROM.read(config_addr(ADDR_CONF_MDNS_NAME + i));
+        if (boundary_state.mdns_hostname[i] == (char)0xFF) boundary_state.mdns_hostname[i] = '\0';
+    }
+    boundary_state.mdns_hostname[32] = '\0';
+
     // Reset runtime state
     boundary_state.packets_bridged_lora_to_tcp = 0;
     boundary_state.packets_bridged_tcp_to_lora = 0;
@@ -436,6 +462,16 @@ inline void boundary_save_config() {
         EEPROM.write(config_addr(ADDR_CONF_ST_AL), st_byte);
         EEPROM.write(config_addr(ADDR_CONF_LT_AL), lt_byte);
     }
+
+    // mDNS enable flag
+    EEPROM.write(config_addr(ADDR_CONF_MDNS_EN),
+                 boundary_state.mdns_enabled ? BOUNDARY_ENABLE_BYTE : 0x00);
+
+    // Custom mDNS hostname
+    for (int i = 0; i < 32; i++) {
+        EEPROM.write(config_addr(ADDR_CONF_MDNS_NAME + i), boundary_state.mdns_hostname[i]);
+    }
+    EEPROM.write(config_addr(ADDR_CONF_MDNS_NAME + 32), 0x00);
 
     EEPROM.write(config_addr(ADDR_CONF_APP_MARKER0), BOUNDARY_APP_MARKER0);
     EEPROM.write(config_addr(ADDR_CONF_APP_MARKER1), BOUNDARY_APP_MARKER1);
