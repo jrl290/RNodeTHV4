@@ -12,7 +12,7 @@ This project was primarily developed with the use of AI assistance.
   └──────────┘                │                                rmap.world)
                          LoRa Radio                                ▲
                               │            ┌──────────────┐  WiFi  │
-                       ◄── RF mesh ──────► │ RTNode-HV4  │ ◄─TCP──┘
+                       ◄── RF mesh ──────► │ RTNode-HV4   │ ◄─TCP──┘
                               │            │Transport Node│    ▲
                         Other RNodes       └──────────────┘    │
                                                            ┌───┴───┐
