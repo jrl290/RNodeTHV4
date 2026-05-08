@@ -1,5 +1,17 @@
 [
   {
+    "tag": "v1.0.31",
+    "name": "v1.0.31 \u2014 Fix LoRa routing: all interfaces MODE_GATEWAY",
+    "prerelease": false,
+    "published_at": "2026-05-08T18:43:00Z",
+    "assets": [
+      "rtnode_heltec_v3.bin",
+      "rtnode_heltec_v3_merged.bin",
+      "rtnode_heltec_v4.bin",
+      "rtnode_heltec_v4_merged.bin"
+    ]
+  },
+  {
     "tag": "v1.0.30",
     "name": "v1.0.30 \u2014 Heltec V4 boot reliability (DIO image header)",
     "prerelease": false,

@@ -4538,7 +4538,7 @@ TRACE("Transport::write_path_table: buffer size " + std::to_string(Persistence::
 	// _reverse_table
 	// _announce_table
 	// _held_announces
-	HEADF(LOG_VERBOSE, "mem: %u (%u%%) [%d] flash: %u (%u%%) [%d] paths: %u dsts: %u revr: %u annc: %u held: %u", memory, (int)((double)memory / (double)OS::heap_size() * 100.0), memory - _last_memory, flash, (int)((double)flash / (double)OS::storage_size() * 100.0), flash - _last_flash, _destination_table.size(), _destinations.size(), _reverse_table.size(), _announce_table.size(), _held_announces.size());
+	HEADF(LOG_VERBOSE, "mem_free: %u (%u%%) [%d] flash_free: %u (%u%%) [%d] paths: %u dsts: %u revr: %u annc: %u held: %u", memory, (int)((double)memory / (double)OS::heap_size() * 100.0), memory - _last_memory, flash, (int)((double)flash / (double)OS::storage_size() * 100.0), flash - _last_flash, _destination_table.size(), _destinations.size(), _reverse_table.size(), _announce_table.size(), _held_announces.size());
 
 	// _path_requests
 	// _discovery_path_requests

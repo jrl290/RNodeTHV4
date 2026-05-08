@@ -243,23 +243,22 @@ The 128×64 OLED is split into two panels:
 
 The firmware runs up to **three RNS interfaces** simultaneously, using different interface modes to control announce propagation and routing behavior:
 
-### LoRa Interface — `MODE_FULL`
+### LoRa Interface — `MODE_GATEWAY`
 
-The LoRa radio operates in **Full mode**. In Reticulum, this means:
-- Announces propagate freely in both directions — LoRa nodes learn about local TCP clients and backbone destinations, and vice versa
-- Backbone announce flooding on the low-bandwidth LoRa channel is controlled by the BOUNDARY firewall (see TCP Backbone Interface below), not by interface mode
-- All LoRa ↔ local TCP and LoRa ↔ backbone routing works without manual path requests
+Always uses `MODE_GATEWAY`. Announce broadcasts propagate freely in both directions, allowing the relay to forward announces between LoRa nodes and ensuring Transport's own path-probe packets are transmitted.
 
 ### TCP Backbone Interface — `MODE_BOUNDARY`
 
 The TCP backbone connection uses `MODE_BOUNDARY` (`0x20`), a custom transport mode adapted for the memory-constrained ESP32 environment. In this mode:
 - Incoming announces from the backbone are received and cached, but **not stored in the path table by default** — only stored when specifically requested via a path request from a local LoRa node
-- This prevents the path table (limited to 48 entries on ESP32) from being overwhelmed by thousands of backbone destinations
+- This prevents the path table (limited to **24 entries** on ESP32) from being overwhelmed by thousands of backbone destinations
 - When the path table needs to be culled, **backbone-learned paths are evicted first**, preserving locally-needed LoRa paths
+
+Only registered when WiFi is enabled and `tcp_mode == 1` (client mode).
 
 ### Optional Local TCP Server — `MODE_GATEWAY`
 
-If enabled, a TCP server on the WiFi network allows local Reticulum nodes to connect. It uses Gateway mode, so announces are forwarded to and from local TCP clients freely (matching standard Reticulum transport node behaviour).
+When both WiFi and the local TCP server are enabled, a TCP server on the WiFi network allows local Reticulum nodes to connect. It uses `MODE_GATEWAY`, so announces are forwarded freely to and from local TCP clients (matching standard Reticulum transport node behaviour). Also registered as a local-client interface so Transport forwards announces, link packets, and proofs to connected clients.
 
 **Implementation details:**
 - Each TCP interface must have a **unique name** to produce a unique interface hash — the backbone uses `"TcpInterface"` and the local server uses `"LocalTcpInterface"`. Without distinct names, both interfaces produce the same hash, causing the interface map lookup to fail when routing packets.
@@ -274,7 +273,7 @@ The ESP32-S3 has limited RAM compared to a desktop Reticulum node. Several custo
 
 | Table | Default (Desktop) | RTNode-HeltecV4 | Rationale |
 |-------|-------------------|-----------|-----------|
-| Path table (`_destination_table`) | Unbounded | **48 entries** | Prevents unbounded growth; backbone-learned paths evicted first |
+| Path table (`_destination_table`) | Unbounded | **24 entries** | Prevents unbounded growth; backbone-learned paths evicted first |
 | Hash list (`_hashlist`) | 1,000,000 | **32** | Packet dedup list; small is fine for low-throughput LoRa |
 | Path request tags (`_max_pr_tags`) | 32,000 | **32** | Pending path requests rarely exceed a few dozen |
 | Known destinations | 100 | **24** | Identity cache; rarely need more on a transport node |

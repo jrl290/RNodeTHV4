@@ -241,7 +241,7 @@ RNS::FileSystem filesystem(RNS::Type::NONE);
 BoundaryState boundary_state = {};
 RNS::Interface tcp_rns_interface(RNS::Type::NONE);
 TcpInterface*  tcp_interface_ptr = nullptr;
-// Local TCP server (MODE_ACCESS_POINT, doesn't forward announces)
+// Local TCP server
 RNS::Interface local_tcp_rns_interface(RNS::Type::NONE);
 TcpInterface*  local_tcp_interface_ptr = nullptr;
 // RTC memory flag — survives software reset but not power cycle
@@ -787,7 +787,6 @@ void setup() {
 
       HEAD("Registering LoRA Interface...", RNS::LOG_TRACE);
       lora_interface = new LoRaInterface();
-      lora_interface.mode(RNS::Type::Interface::MODE_ACCESS_POINT);
       RNS::Transport::register_interface(lora_interface);
 
 #ifdef BOUNDARY_MODE
@@ -814,6 +813,9 @@ void setup() {
           HEAD(_ifac_msg, RNS::LOG_TRACE);
         }
       }
+
+      // All interfaces use GATEWAY — allows announce forwarding in all modes
+      lora_interface.mode(RNS::Type::Interface::MODE_GATEWAY);
 
       // Start WiFi if enabled
       if (boundary_state.wifi_enabled) {
@@ -853,10 +855,6 @@ void setup() {
       }
 
       // Register local TCP server if enabled
-      // MODE_GATEWAY allows announce rebroadcasts so local TCP clients
-      // can discover each other and receive backbone announces.
-      // (MODE_ACCESS_POINT blocks all announce broadcasts in outbound(),
-      //  which prevented local clients from finding paths to each other.)
       if (boundary_state.wifi_enabled && boundary_state.ap_tcp_enabled) {
         local_tcp_interface_ptr = new TcpInterface(
             TCP_IF_MODE_SERVER,
@@ -960,7 +958,7 @@ void setup() {
 #ifdef BOUNDARY_MODE
       HEAD("*** BOUNDARY MODE ACTIVE ***", RNS::LOG_TRACE);
       HEAD("RNS transport mode is ENABLED (boundary)", RNS::LOG_TRACE);
-      HEAD("LoRa Interface: MODE_ACCESS_POINT", RNS::LOG_TRACE);
+      HEAD("LoRa Interface: MODE_GATEWAY", RNS::LOG_TRACE);
       {
         char _bm_info[128];
         if (boundary_state.tcp_mode == 1) {
@@ -971,7 +969,7 @@ void setup() {
           HEAD("TCP Backbone: DISABLED", RNS::LOG_TRACE);
         }
         if (boundary_state.ap_tcp_enabled) {
-          snprintf(_bm_info, sizeof(_bm_info), "Local TCP Server: port %d (MODE_ACCESS_POINT)",
+          snprintf(_bm_info, sizeof(_bm_info), "Local TCP Server: port %d (MODE_GATEWAY)",
                    boundary_state.ap_tcp_port);
           HEAD(_bm_info, RNS::LOG_TRACE);
         }
