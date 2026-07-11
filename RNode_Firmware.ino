@@ -1294,7 +1294,18 @@ inline void kiss_write_packet() {
     #endif
     data << byte;
   }
-  lora_interface.handle_incoming(data);
+  // FIX (community patch): drop frames below the RNS minimum header size instead of
+  // forwarding them. A malformed short frame (e.g. from RF collisions) that goes through
+  // the raw-shift path above and then the FIREWALL_MODE forward causes a NULL-pointer
+  // LoadProhibited panic. This mirrors the HEADER_MINSIZE check already enforced in
+  // Packet::unpack(), placed AFTER the raw-shift so genuinely byte-shifted valid frames
+  // (which become >= HEADER_MINSIZE after the prepend) are still recovered.
+  if (data.size() >= RNS::Type::Reticulum::HEADER_MINSIZE) {
+    lora_interface.handle_incoming(data);
+  } else {
+    VERBOSEF("[LoRa] RX dropped: %u bytes below HEADER_MINSIZE (%u)",
+        (unsigned)data.size(), (unsigned)RNS::Type::Reticulum::HEADER_MINSIZE);
+  }
   last_lora_phy_header_valid = false;
 #endif
 
