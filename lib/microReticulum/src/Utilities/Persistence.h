@@ -13,6 +13,7 @@
 #include <deque>
 #include <set>
 #include <string>
+#include <algorithm>
 
 namespace ArduinoJson {
 
