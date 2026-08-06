@@ -253,7 +253,7 @@ void Link::handshake() {
 		uint16_t derived_key_length;
 		if (_object->_mode == RNS::Type::Link::MODE_AES128_CBC) derived_key_length = 32;
 		else if (_object->_mode == RNS::Type::Link::MODE_AES256_CBC) derived_key_length = 64;
-		else throw new std::invalid_argument("Invalid link mode "+std::to_string(_object->_mode)+" on "+toString());
+		else throw std::invalid_argument("Invalid link mode "+std::to_string(_object->_mode)+" on "+toString());
 
 		_object->_derived_key = Cryptography::hkdf(
 			derived_key_length,
@@ -1477,7 +1477,7 @@ RequestReceipt::RequestReceipt(const Link& link, const PacketReceipt& packet_rec
 		_object->_timeout = timeout;
 	}
 	else {
-		throw new std::invalid_argument("No timeout specified for request receipt");
+		throw std::invalid_argument("No timeout specified for request receipt");
 	}
 
 	_object->_callbacks._response = response_callback;

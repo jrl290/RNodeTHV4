@@ -84,7 +84,7 @@ const Bytes Token::encrypt(const Bytes& data) {
 		);
 	}
 	else {
-		throw new std::invalid_argument("Invalid token mode "+std::to_string(_mode));
+		throw std::invalid_argument("Invalid token mode "+std::to_string(_mode));
 	}
 	DEBUG("Token::encrypt: padded ciphertext length: " + std::to_string(ciphertext.size()));
 	TRACE("Token::encrypt: ciphertext: " + ciphertext.toHex());
@@ -140,7 +140,7 @@ const Bytes Token::decrypt(const Bytes& token) {
 			);
 		}
 		else {
-			throw new std::invalid_argument("Invalid token mode "+std::to_string(_mode));
+			throw std::invalid_argument("Invalid token mode "+std::to_string(_mode));
 		}
 		DEBUG("Token::encrypt: unpadded plaintext length: " + std::to_string(plaintext.size()));
 		TRACE("Token::decrypt: plaintext:  " + plaintext.toHex());
